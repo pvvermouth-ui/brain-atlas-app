@@ -1,0 +1,512 @@
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  min-height: 100%;
+  background-color: #000;
+  color: #fff;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+}
+
+.atlas-app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  background-color: #000;
+  overflow: hidden;
+}
+
+/* ===== ヘッダー ===== */
+.atlas-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 16px;
+  background-color: #111;
+  border-bottom: 1px solid #222;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.header-left, .header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.app-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.app-subtitle {
+  font-size: 11px;
+  color: #00e5ff;
+  font-weight: normal;
+  margin-left: 6px;
+}
+
+.seq-group {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  background-color: #1c1c1c;
+  padding: 3px 5px;
+  border-radius: 5px;
+  border: 1px solid #333;
+}
+
+.seq-btn {
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  border-radius: 3px;
+  border: none;
+  background-color: transparent;
+  color: #aaa;
+  cursor: pointer;
+}
+
+.seq-btn.active {
+  background-color: #1976d2;
+  color: #fff;
+}
+
+.layer-bar-desktop {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background-color: #181818;
+  padding: 3px 6px;
+  border-radius: 5px;
+  border: 1px solid #2e2e2e;
+}
+
+.layer-popover-wrapper {
+  display: none;
+  position: relative;
+}
+
+.layer-popover-btn {
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: bold;
+  border-radius: 5px;
+  border: 1px solid #00acc1;
+  background-color: #14282b;
+  color: #00e5ff;
+  cursor: pointer;
+}
+
+.layer-popover-panel {
+  position: fixed;
+  top: 56px;
+  left: 12px;
+  right: 12px;
+  max-width: 420px;
+  margin: 0 auto;
+  background-color: #161616;
+  border: 1px solid #444;
+  border-radius: 10px;
+  padding: 14px;
+  z-index: 200;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.9);
+}
+
+.layer-popover-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.alpha-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.coord-badge {
+  font-size: 11px;
+  color: #00e5ff;
+  background-color: #1a1a1a;
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid #333;
+  white-space: nowrap;
+}
+
+/* ===== メインレイアウト（PC 3カラム） ===== */
+.atlas-main {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.pane-primary {
+  flex: 1.5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 16px;
+  border-right: 1px solid #222;
+  position: relative;
+  min-width: 0;
+}
+
+.pane-secondary {
+  width: clamp(400px, 31vw, 560px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 10px 12px;
+  border-right: 1px solid #222;
+  background-color: #0a0a0a;
+  gap: 8px;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+
+.pane-inspector {
+  width: clamp(300px, 22vw, 380px);
+  background-color: #0d0d0d;
+  padding: 14px 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex-shrink: 0;
+}
+
+/* キャンバス枠 */
+.canvas-box-main {
+  width: min(100%, 84vh, 880px);
+  aspect-ratio: 1 / 1;
+  border: 1px solid #333;
+  border-radius: 4px;
+  overflow: hidden;
+  box-shadow: 0 0 24px rgba(0, 0, 0, 0.9);
+  position: relative;
+  background-color: #000;
+}
+
+.canvas-box-sub {
+  width: min(100%, 40vh, 460px);
+  aspect-ratio: 1 / 1;
+  border: 1px solid #333;
+  border-radius: 4px;
+  overflow: hidden;
+  position: relative;
+  background-color: #000;
+}
+
+.canvas-box-zoom {
+  width: min(100%, 62vh, 520px);
+  aspect-ratio: 1 / 1;
+  border: 1px solid #00acc1;
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: 0 0 18px rgba(0, 229, 255, 0.2);
+  position: relative;
+  background-color: #000;
+}
+
+.mri-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: crosshair;
+  transform-origin: center center;
+  will-change: transform;
+}
+
+/* キャンバス右下のズーム操作ボタン */
+.zoom-controls-overlay {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  display: flex;
+  gap: 4px;
+  z-index: 20;
+}
+
+.zoom-ctrl-btn {
+  min-width: 30px;
+  height: 30px;
+  padding: 0 7px;
+  border-radius: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background-color: rgba(15, 15, 15, 0.78);
+  color: #fff;
+  font-size: 12px;
+  font-weight: bold;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.zoom-ctrl-btn:active {
+  background-color: #0288d1;
+}
+
+.submode-tabs {
+  display: flex;
+  width: 100%;
+  max-width: 520px;
+  gap: 5px;
+  background-color: #141414;
+  padding: 4px;
+  border-radius: 6px;
+  border: 1px solid #2c2c2c;
+}
+
+.submode-btn {
+  flex: 1;
+  padding: 6px 4px;
+  font-size: 11px;
+  font-weight: bold;
+  border-radius: 4px;
+  border: none;
+  cursor: pointer;
+  background-color: transparent;
+  color: #aaa;
+}
+
+.submode-btn.active {
+  background-color: #00838f;
+  color: #fff;
+}
+
+.mobile-view-tabs,
+.mobile-touch-readout,
+.mobile-z-stepper {
+  display: none;
+}
+
+.control-card {
+  background-color: #141414;
+  border: 1px solid #262626;
+  border-radius: 6px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.stepper-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.step-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  border: 1px solid #444;
+  background-color: #222;
+  color: #fff;
+  font-size: 16px;
+  font-weight: bold;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.step-btn:active {
+  background-color: #0288d1;
+}
+
+/* =========================================================
+   タブレット対応 (768px 〜 1279px)
+   ========================================================= */
+@media (max-width: 1279px) {
+  .layer-bar-desktop {
+    display: none;
+  }
+  .layer-popover-wrapper {
+    display: block;
+  }
+  .atlas-app {
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
+  }
+  .atlas-main {
+    display: grid;
+    grid-template-columns: 1.15fr 0.85fr;
+    grid-template-rows: auto auto;
+    overflow: visible;
+  }
+  .pane-primary {
+    grid-column: 1 / 2;
+    grid-row: 1 / 2;
+    border-right: 1px solid #222;
+    border-bottom: 1px solid #222;
+    padding: 12px;
+  }
+  .pane-secondary {
+    grid-column: 2 / 3;
+    grid-row: 1 / 2;
+    width: 100%;
+    border-right: none;
+    border-bottom: 1px solid #222;
+    overflow: visible;
+  }
+  .pane-inspector {
+    grid-column: 1 / 3;
+    grid-row: 2 / 3;
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr 1.2fr;
+    gap: 16px;
+    overflow: visible;
+  }
+  .canvas-box-main {
+    width: min(100%, 54vh);
+  }
+  .canvas-box-sub {
+    width: min(100%, 26vh);
+  }
+  .canvas-box-zoom {
+    width: min(100%, 46vh);
+  }
+}
+
+/* =========================================================
+   スマホ対応 (767px 以下)
+   ========================================================= */
+@media (max-width: 767px) {
+  .atlas-header {
+    padding: 8px 10px;
+    gap: 6px;
+  }
+  .app-title {
+    font-size: 14px;
+  }
+  .app-subtitle, .coord-badge {
+    display: none;
+  }
+  .seq-btn {
+    padding: 4px 7px;
+    font-size: 11px;
+  }
+  .alpha-control {
+    width: 100%;
+    justify-content: space-between;
+  }
+  .alpha-control input[type="range"] {
+    flex: 1;
+  }
+
+  .atlas-main {
+    display: flex;
+    flex-direction: column;
+    overflow: visible;
+  }
+
+  .mobile-view-tabs {
+    display: flex;
+    width: 100%;
+    gap: 6px;
+    padding: 8px 10px 4px 10px;
+    overflow-x: auto;
+    background-color: #0a0a0a;
+    border-bottom: 1px solid #222;
+    -webkit-overflow-scrolling: touch;
+  }
+  .mobile-view-tabs::-webkit-scrollbar {
+    display: none;
+  }
+  .mobile-tab-btn {
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: bold;
+    border-radius: 16px;
+    border: 1px solid #333;
+    background-color: #1a1a1a;
+    color: #aaa;
+    white-space: nowrap;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .mobile-tab-btn.active {
+    background-color: #00838f;
+    border-color: #00e5ff;
+    color: #fff;
+  }
+
+  .mobile-touch-readout {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    min-height: 36px;
+    padding: 6px 12px;
+    background-color: #141414;
+    border-bottom: 1px solid #262626;
+    font-size: 12px;
+  }
+
+  .pane-primary, .pane-secondary {
+    width: 100%;
+    padding: 8px 10px;
+    border-right: none;
+    border-bottom: none;
+  }
+
+  .mobile-hidden {
+    display: none !important;
+  }
+
+  .canvas-box-main,
+  .canvas-box-sub,
+  .canvas-box-zoom {
+    width: min(100%, 94vw);
+    max-width: 480px;
+  }
+
+  .desktop-only-header {
+    display: none !important;
+  }
+
+  .mobile-z-stepper {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: 100%;
+    padding: 8px 12px;
+    background-color: #111;
+    border-top: 1px solid #222;
+    border-bottom: 1px solid #222;
+  }
+
+  .pane-inspector {
+    display: flex;
+    flex-direction: column;
+    padding: 12px 10px 40px 10px;
+    gap: 14px;
+  }
+
+  .desktop-tooltip {
+    display: none !important;
+  }
+}
