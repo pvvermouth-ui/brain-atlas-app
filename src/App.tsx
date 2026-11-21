@@ -552,7 +552,7 @@ export default function App() {
       drawScaledSlice(canvas, ctx, imgData, SCALE);
 
       ctx.setLineDash([]);
-      ctx.lineWidth = 1.2;
+      ctx.lineWidth = 0.8;
       ctx.strokeStyle = 'rgba(255, 152, 0, 0.95)';
       ctx.beginPath(); ctx.moveTo((coords.x + 0.5) * SCALE, 0); ctx.lineTo((coords.x + 0.5) * SCALE, canvas.height); ctx.stroke();
       ctx.strokeStyle = 'rgba(76, 175, 80, 0.95)';
@@ -601,7 +601,7 @@ export default function App() {
       drawScaledSlice(canvas, ctx, imgData, SCALE);
 
       ctx.setLineDash([]);
-      ctx.lineWidth = 1.2;
+      ctx.lineWidth = 0.8;
       ctx.strokeStyle = 'rgba(255, 152, 0, 0.95)';
       ctx.beginPath(); ctx.moveTo((coords.x + 0.5) * SCALE, 0); ctx.lineTo((coords.x + 0.5) * SCALE, canvas.height); ctx.stroke();
       ctx.strokeStyle = 'rgba(41, 182, 246, 0.95)';
@@ -648,14 +648,14 @@ export default function App() {
       const cursorScreenPy = DIMS.y - 1 - coords.y;
       const cursorScreenPz = DIMS.z - 1 - coords.z;
       ctx.setLineDash([]);
-      ctx.lineWidth = 1.2;
+      ctx.lineWidth = 0.8;
       ctx.strokeStyle = 'rgba(76, 175, 80, 0.95)';
       ctx.beginPath(); ctx.moveTo((cursorScreenPy + 0.5) * SCALE, 0); ctx.lineTo((cursorScreenPy + 0.5) * SCALE, canvas.height); ctx.stroke();
       ctx.strokeStyle = 'rgba(41, 182, 246, 0.95)';
       ctx.beginPath(); ctx.moveTo(0, (cursorScreenPz + 0.5) * SCALE); ctx.lineTo(canvas.width, (cursorScreenPz + 0.5) * SCALE); ctx.stroke();
 
       ctx.strokeStyle = 'rgba(255, 235, 59, 0.95)';
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = 0.8;
       ctx.beginPath();
       for (let py = 0; py < DIMS.y; py++) {
         const vy = DIMS.y - 1 - py;
