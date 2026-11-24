@@ -1,6 +1,10 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
+import { Capacitor } from '@capacitor/core';
+import { StatusBar, Style } from '@capacitor/status-bar';
 import './App.css';
 import Mra3DViewer from './Mra3DViewer';
+
+const isNativeApp = Capacitor.isNativePlatform();
 
 const DIMS = { x: 192, y: 192, z: 192 };
 const VOL_SCALE = 192 / 128; // 1.5
@@ -162,6 +166,13 @@ export default function App() {
     id: number;
     info: StructureInfo;
   } | null>(null);
+
+  // ネイティブアプリ（iOS/Android）起動時はステータスバーを非表示にして横画面領域を最大化
+  useEffect(() => {
+    if (!isNativeApp) return;
+    StatusBar.setStyle({ style: Style.Dark }).catch(() => {});
+    StatusBar.hide().catch(() => {});
+  }, []);
 
   // フルスクリーン状態の監視
   useEffect(() => {
@@ -1183,22 +1194,24 @@ export default function App() {
             {mriSeq === 'mra' ? '3D-TOF MRA' : `X:${coords.x} Y:${coords.y} Z:${coords.z}`}
           </div>
 
-          <button
-            onClick={toggleLandscapeFullscreen}
-            style={{
-              padding: '4px 8px',
-              fontSize: '11px',
-              fontWeight: 'bold',
-              borderRadius: '4px',
-              border: isFullscreen ? '1px solid #00e5ff' : '1px solid #444',
-              backgroundColor: isFullscreen ? '#004d40' : '#222',
-              color: isFullscreen ? '#00e5ff' : '#ddd',
-              cursor: 'pointer',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            {isFullscreen ? '全画面解除' : '横全画面'}
-          </button>
+          {!isNativeApp && (
+            <button
+              onClick={toggleLandscapeFullscreen}
+              style={{
+                padding: '4px 8px',
+                fontSize: '11px',
+                fontWeight: 'bold',
+                borderRadius: '4px',
+                border: isFullscreen ? '1px solid #00e5ff' : '1px solid #444',
+                backgroundColor: isFullscreen ? '#004d40' : '#222',
+                color: isFullscreen ? '#00e5ff' : '#ddd',
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {isFullscreen ? '全画面解除' : '横全画面'}
+            </button>
+          )}
         </div>
       </header>
 

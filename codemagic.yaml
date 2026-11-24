@@ -1,0 +1,86 @@
+workflows:
+  # =========================================================
+  # 1. Android APK ビルド（ストア公開なし・直接配布用）
+  # =========================================================
+  android-apk-release:
+    name: Android APK Build
+    max_build_duration: 30
+    instance_type: linux_x2
+    environment:
+      # 任意: 本番用KeystoreをCodemagicに登録した場合、下の行のコメントを外し
+      #       登録した reference 名（例: brain_atlas_keystore）を指定してください。
+      #       未設定のままでもテスト用署名付きAPKが生成され、そのまま端末にインストールできます。
+      # android_signing:
+      #   - brain_atlas_keystore
+      node: 22
+      java: 21
+    scripts:
+      - name: Install dependencies
+        script: |
+          npm ci
+      - name: Build web assets for Capacitor
+        script: |
+          npm run build:native
+      - name: Sync Capacitor Android project
+        script: |
+          npx cap sync android
+      - name: Build Android Release APK
+        script: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleRelease
+    artifacts:
+      - android/app/build/outputs/apk/release/*.apk
+
+  # =========================================================
+  # 2. iOS / iPadOS ビルド ＆ TestFlight 自動配信
+  # =========================================================
+  ios-testflight:
+    name: iOS & iPadOS TestFlight
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    integrations:
+      app_store_connect: scan_note_app_store
+    environment:
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.pvvermouth.brainatlas
+      vars:
+        BUNDLE_ID: "com.pvvermouth.brainatlas"
+        XCODE_PROJECT: "ios/App/App.xcodeproj"
+        XCODE_SCHEME: "App"
+        APP_STORE_APPLE_ID: 6838703184
+      node: 22
+      xcode: latest
+    scripts:
+      - name: Install dependencies
+        script: |
+          npm ci
+      - name: Build web assets for Capacitor
+        script: |
+          npm run build:native
+      - name: Sync Capacitor iOS project
+        script: |
+          npx cap sync ios
+      - name: Set up code signing settings on Xcode project
+        script: |
+          xcode-project use-profiles --project "$XCODE_PROJECT"
+      - name: Increment build number
+        script: |
+          cd ios/App
+          LATEST_BUILD_NUMBER=$(app-store-connect get-latest-testflight-build-number "$APP_STORE_APPLE_ID" 2>/dev/null || echo 0)
+          LATEST_BUILD_NUMBER=${LATEST_BUILD_NUMBER:-0}
+          agvtool new-version -all $((LATEST_BUILD_NUMBER + 1))
+      - name: Build iOS IPA for TestFlight
+        script: |
+          xcode-project build-ipa \
+            --project "$XCODE_PROJECT" \
+            --scheme "$XCODE_SCHEME"
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
+        submit_to_app_store: false
