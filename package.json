@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "build:native": "tsc -b && vite build --mode capacitor",
     "cap:sync": "npm run build:native && npx cap sync",
+    "android:usb": "powershell -ExecutionPolicy Bypass -File scripts/android-usb.ps1",
     "lint": "eslint .",
     "preview": "vite preview"
   },
