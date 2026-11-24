@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 
-const DIMS = { x: 128, y: 128, z: 128 };
+const DIMS = { x: 192, y: 192, z: 192 };
+const VOL_SCALE = 192 / 128; // 1.5
 
 export interface StructureInfo {
   abbr: string;
@@ -36,7 +37,6 @@ interface ProjectedPoint {
 
 type Mat3 = [number, number, number, number, number, number, number, number, number];
 
-// 3x3 行列の乗算 (A * B)
 function mulMat3(a: Mat3, b: Mat3): Mat3 {
   return [
     a[0] * b[0] + a[1] * b[3] + a[2] * b[6],
@@ -51,7 +51,6 @@ function mulMat3(a: Mat3, b: Mat3): Mat3 {
   ];
 }
 
-// 数値誤差による歪みを防ぐ正規直交化
 function orthonormalize(m: Mat3): Mat3 {
   const len0 = Math.hypot(m[0], m[1], m[2]) || 1;
   const r0x = m[0] / len0, r0y = m[1] / len0, r0z = m[2] / len0;
@@ -63,7 +62,6 @@ function orthonormalize(m: Mat3): Mat3 {
   const len1 = Math.hypot(r1x, r1y, r1z) || 1;
   r1x /= len1; r1y /= len1; r1z /= len1;
 
-  // 外積 r0 × r1 で第3行を厳密に算出
   const r2x = r0y * r1z - r0z * r1y;
   const r2y = r0z * r1x - r0x * r1z;
   const r2z = r0x * r1y - r0y * r1x;
@@ -71,7 +69,6 @@ function orthonormalize(m: Mat3): Mat3 {
   return [r0x, r0y, r0z, r1x, r1y, r1z, r2x, r2y, r2z];
 }
 
-// 画面基準の回転行列（右ドラッグで手前が右へ、下ドラッグで手前が下へ動く）
 function makeScreenRot(dxAngle: number, dyAngle: number): Mat3 {
   const cy = Math.cos(dxAngle), sy = Math.sin(dxAngle);
   const cx = Math.cos(dyAngle), sx = Math.sin(dyAngle);
@@ -80,17 +77,11 @@ function makeScreenRot(dxAngle: number, dyAngle: number): Mat3 {
   return mulMat3(rx, ry);
 }
 
-// プリセット視点の回転行列
 const PRESET_MATRICES: Record<string, Mat3> = {
-  // 軸位 (Axial: 上=前頭, 下=後頭, 左=右半球, 右=左半球, 手前=脳底/Willis輪)
   axial: [1, 0, 0, 0, 0, -1, 0, 1, 0],
-  // 正面 (AP: 上=頭頂, 下=脳底, 手前=前頭)
   ap: [1, 0, 0, 0, 1, 0, 0, 0, 1],
-  // 左側面 (手前=左半球, 左=前頭, 右=後頭)
   left: [0, 0, -1, 0, 1, 0, 1, 0, 0],
-  // 右側面 (手前=右半球, 右=前頭, 左=後頭)
   right: [0, 0, 1, 0, 1, 0, -1, 0, 0],
-  // 上面 (頭頂から見下ろし: 手前=頭頂, 下=前頭)
   top: [1, 0, 0, 0, 0, 1, 0, -1, 0],
 };
 
@@ -107,7 +98,6 @@ export default function Mra3DViewer({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const projectedVesselsRef = useRef<ProjectedPoint[]>([]);
 
-  // 回転行列・ズーム倍率（デフォルトは軸位投影）
   const viewRef = useRef<{ mat: Mat3; zoom: number }>({
     mat: [...PRESET_MATRICES.axial] as Mat3,
     zoom: DEFAULT_ZOOM,
@@ -125,15 +115,15 @@ export default function Mra3DViewer({
     moved: false,
   });
 
-  // 1. labelData から全14動脈ボクセル(901〜914)と脳輪郭ゴースト点群を抽出
+  // 1. labelData (192³) から全14動脈ボクセル(901〜914)と脳輪郭ゴースト点群を抽出
   const { vesselPoints, ghostPoints } = useMemo(() => {
     const vessels: VoxelPoint[] = [];
     const ghosts: Array<{ x: number; y: number; z: number }> = [];
     if (!labelData) return { vesselPoints: vessels, ghostPoints: ghosts };
 
-    const cx = 64;
-    const cy = 64;
-    const cz = 46;
+    const cx = 64 * VOL_SCALE;
+    const cy = 64 * VOL_SCALE;
+    const cz = 46 * VOL_SCALE;
 
     for (let x = 0; x < DIMS.x; x++) {
       for (let y = 0; y < DIMS.y; y++) {
@@ -141,11 +131,18 @@ export default function Mra3DViewer({
           const idx = z + y * DIMS.z + x * DIMS.z * DIMS.y;
           const id = labelData[idx];
           if (id >= 901 && id <= 914) {
-            vessels.push({ x: x - cx, y: -(z - cz), z: y - cy, id });
+            if ((x + y + z) % 2 === 0) {
+              vessels.push({
+                x: (x - cx) / VOL_SCALE,
+                y: -(z - cz) / VOL_SCALE,
+                z: (y - cy) / VOL_SCALE,
+                id,
+              });
+            }
           } else if (
-            x % 6 === 0 &&
-            y % 6 === 0 &&
-            z % 6 === 0 &&
+            x % 9 === 0 &&
+            y % 9 === 0 &&
+            z % 9 === 0 &&
             ((id >= 101 && id <= 130) || (id >= 701 && id <= 726) || (id >= 600 && id <= 699))
           ) {
             const xm = x > 0 ? labelData[z + y * DIMS.z + (x - 1) * DIMS.z * DIMS.y] : 0;
@@ -153,7 +150,11 @@ export default function Mra3DViewer({
             const zm = z > 0 ? labelData[z - 1 + y * DIMS.z + x * DIMS.z * DIMS.y] : 0;
             const zp = z < DIMS.z - 1 ? labelData[z + 1 + y * DIMS.z + x * DIMS.z * DIMS.y] : 0;
             if (xm === 0 || xp === 0 || zm === 0 || zp === 0) {
-              ghosts.push({ x: x - cx, y: -(z - cz), z: y - cy });
+              ghosts.push({
+                x: (x - cx) / VOL_SCALE,
+                y: -(z - cz) / VOL_SCALE,
+                z: (y - cy) / VOL_SCALE,
+              });
             }
           }
         }
@@ -162,7 +163,7 @@ export default function Mra3DViewer({
     return { vesselPoints: vessels, ghostPoints: ghosts };
   }, [labelData]);
 
-  // 2. 3Dレンダリング本体
+  // 2. 3Dレンダリング本体（960x960 高解像度）
   const render3D = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -171,7 +172,7 @@ export default function Mra3DViewer({
 
     const W = 960;
     const H = 960;
-    const resScale = W / 640; // 1.5倍スケーリング
+    const resScale = W / 640;
     if (canvas.width !== W || canvas.height !== H) {
       canvas.width = W;
       canvas.height = H;
@@ -179,7 +180,7 @@ export default function Mra3DViewer({
 
     const { mat, zoom } = viewRef.current;
 
-    const bgGrad = ctx.createRadialGradient(W / 2, H / 2, 30, W / 2, H / 2, W * 0.65);
+    const bgGrad = ctx.createRadialGradient(W / 2, H / 2, 45, W / 2, H / 2, W * 0.65);
     bgGrad.addColorStop(0, '#0b1018');
     bgGrad.addColorStop(1, '#000000');
     ctx.fillStyle = bgGrad;
@@ -205,7 +206,6 @@ export default function Mra3DViewer({
       };
     };
 
-    // 脳輪郭ゴースト
     if (showBrainGhost && ghostPoints.length > 0) {
       ctx.fillStyle = 'rgba(130, 170, 210, 0.16)';
       for (let i = 0; i < ghostPoints.length; i++) {
@@ -217,7 +217,6 @@ export default function Mra3DViewer({
       }
     }
 
-    // 血管ボクセル投影＆Zソート
     const projList: ProjectedPoint[] = [];
     for (let i = 0; i < vesselPoints.length; i++) {
       const v = vesselPoints[i];
@@ -225,7 +224,7 @@ export default function Mra3DViewer({
       if (!p) continue;
       const isSelected = selectedId === v.id;
       const r = (isSelected ? 3.2 : 2.3) * p.persp * (zoom * 0.72) * resScale;
-      projList.push({ sx: p.sx, sy: p.sy, rz: p.rz, radius: Math.max(1.5, r), id: v.id });
+      projList.push({ sx: p.sx, sy: p.sy, rz: p.rz, radius: Math.max(1.8, r), id: v.id });
     }
 
     projList.sort((a, b) => a.rz - b.rz);
@@ -263,9 +262,9 @@ export default function Mra3DViewer({
       }
     }
 
-    ctx.font = 'bold 11px sans-serif';
+    ctx.font = 'bold 16px sans-serif';
     ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
-    ctx.fillText('ドラッグで360°自由回転 / タップ・クリックで血管解説', 14, H - 14);
+    ctx.fillText('ドラッグで360°自由回転 / タップ・クリックで血管解説', 20, H - 20);
   }, [vesselPoints, ghostPoints, showBrainGhost, selectedId, overlayAlpha, structures]);
 
   const scheduleRender = useCallback(() => {
@@ -286,7 +285,6 @@ export default function Mra3DViewer({
     };
   }, [render3D]);
 
-  // ホイール拡大縮小
   useEffect(() => {
     const el = canvasRef.current;
     if (!el) return;
@@ -300,7 +298,6 @@ export default function Mra3DViewer({
     return () => el.removeEventListener('wheel', onWheel);
   }, [scheduleRender]);
 
-  // ヒットテスト
   const pickVesselAt = (clientX: number, clientY: number): number => {
     const canvas = canvasRef.current;
     if (!canvas) return 0;
@@ -311,7 +308,7 @@ export default function Mra3DViewer({
     const list = projectedVesselsRef.current;
     let bestId = 0;
     let bestDistSq = Infinity;
-    const hitMargin = 14;
+    const hitMargin = 20;
 
     for (let i = list.length - 1; i >= 0; i--) {
       const p = list[i];
@@ -324,13 +321,12 @@ export default function Mra3DViewer({
           bestDistSq = distSq;
           bestId = p.id;
         }
-        if (distSq <= (p.radius + 3) ** 2) return p.id;
+        if (distSq <= (p.radius + 4) ** 2) return p.id;
       }
     }
     return bestId;
   };
 
-  // Pointer Events（トラックボール式・画面基準の360°自由回転）
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     e.currentTarget.setPointerCapture(e.pointerId);
     pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -405,7 +401,6 @@ export default function Mra3DViewer({
     }
 
     if (pointersRef.current.size === 1) {
-      // 2本指ピンチから1本指に戻したとき、残り指の位置を基準に再セットして跳ねを防止
       const remain = Array.from(pointersRef.current.values())[0];
       gestureRef.current.lastX = remain.x;
       gestureRef.current.lastY = remain.y;
@@ -430,14 +425,29 @@ export default function Mra3DViewer({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%', gap: '8px' }}>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px', justifyContent: 'center', width: '100%', maxWidth: '880px' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: '5px',
+          justifyContent: 'center',
+          width: '100%',
+          maxWidth: '880px',
+        }}
+      >
         {presets.map((p) => (
           <button
             key={p.key}
             onClick={() => setPresetView(p.key)}
             style={{
-              padding: '5px 9px', fontSize: '11px', fontWeight: 'bold', borderRadius: '4px',
-              border: '1px solid #333', backgroundColor: '#1a1a1a', color: '#ddd', cursor: 'pointer',
+              padding: '5px 9px',
+              fontSize: '11px',
+              fontWeight: 'bold',
+              borderRadius: '4px',
+              border: '1px solid #333',
+              backgroundColor: '#1a1a1a',
+              color: '#ddd',
+              cursor: 'pointer',
             }}
           >
             {p.label}
@@ -446,10 +456,14 @@ export default function Mra3DViewer({
         <button
           onClick={() => setShowBrainGhost((prev) => !prev)}
           style={{
-            padding: '5px 9px', fontSize: '11px', fontWeight: 'bold', borderRadius: '4px',
+            padding: '5px 9px',
+            fontSize: '11px',
+            fontWeight: 'bold',
+            borderRadius: '4px',
             border: showBrainGhost ? '1px solid #00acc1' : '1px solid #333',
             backgroundColor: showBrainGhost ? '#102a30' : '#1a1a1a',
-            color: showBrainGhost ? '#00e5ff' : '#888', cursor: 'pointer',
+            color: showBrainGhost ? '#00e5ff' : '#888',
+            cursor: 'pointer',
           }}
         >
           脳輪郭: {showBrainGhost ? 'ON' : 'OFF'}

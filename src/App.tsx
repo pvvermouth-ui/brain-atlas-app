@@ -2,11 +2,14 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import './App.css';
 import Mra3DViewer from './Mra3DViewer';
 
-const DIMS = { x: 128, y: 128, z: 128 };
-const SLICE_RES = 384; // 通常3断面の描画解像度（重ければ 256、さらに上げるなら 512）
-const ZOOM_RES = 640;  // 内包・脳幹拡大ビューの描画解像度（元は480）
-const DEFAULT_COORDS = { x: 64, y: 64, z: 54 };
+const DIMS = { x: 192, y: 192, z: 192 };
+const VOL_SCALE = 192 / 128; // 1.5
+const HALF_X = DIMS.x / 2;   // 96
+const SLICE_RES = 384;       // 通常3断面の描画解像度（重ければ 256）
+const ZOOM_RES = 576;        // 内包・脳幹拡大ビューの描画解像度
+const DEFAULT_COORDS = { x: 96, y: 96, z: 81 };
 const DEFAULT_TILT = 0;
+const DEFAULT_TRANSPARENCY = 0.6; // 透明度60%（色の濃さ40%）。0%=色100%、100%=完全透明
 
 interface StructureInfo {
   abbr: string;
@@ -34,6 +37,19 @@ const LAYER_ITEMS = [
   { key: 'sulci', label: '脳溝・裂', color: '#fbc02d' },
 ];
 
+async function fetchGzipBin(url: string): Promise<ArrayBuffer> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${url}`);
+  const rawBuf = await res.arrayBuffer();
+  const bytes = new Uint8Array(rawBuf);
+  if (bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
+    const ds = new DecompressionStream('gzip');
+    const stream = new Blob([rawBuf]).stream().pipeThrough(ds);
+    return await new Response(stream).arrayBuffer();
+  }
+  return rawBuf;
+}
+
 function getCategoryInfo(id: number, name?: string): { key: string; label: string; bg: string } {
   if (name) {
     if (name.includes('脳弓')) return { key: 'wm', label: '2. 大脳白質（連合線維）', bg: '#00838f' };
@@ -56,13 +72,15 @@ function getCategoryInfo(id: number, name?: string): { key: string; label: strin
 }
 
 function getDetailedInternalCapsuleId(baseId: number, vx: number, vy: number): number {
+  const vx128 = vx / VOL_SCALE;
+  const vy128 = vy / VOL_SCALE;
   if (baseId === 202) return 251;
   if (baseId === 203) return 252;
   if (baseId === 204) {
-    if (vy >= 61.5) return 253;
-    if (vy >= 58.5) return 254;
-    if (vy >= 55.0) {
-      return vx < 76.5 ? 256 : 255;
+    if (vy128 >= 61.5) return 253;
+    if (vy128 >= 58.5) return 254;
+    if (vy128 >= 55.0) {
+      return vx128 < 76.5 ? 256 : 255;
     }
     return 257;
   }
@@ -94,13 +112,14 @@ export default function App() {
     startY: 0,
     startPanX: 0,
     startPanY: 0,
-    moved: false
+    moved: false,
   });
 
   const [mriSeq, setMriSeq] = useState<MriSequence>('t1');
   const [subViewMode, setSubViewMode] = useState<SubViewMode>('ortho');
   const [mobileTab, setMobileTab] = useState<MobileViewTab>('axial');
   const [isLayerMenuOpen, setIsLayerMenuOpen] = useState<boolean>(false);
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
 
   // キャンバス拡大率(1.0〜4.0)とパン位置
   const [zoomScale, setZoomScale] = useState<number>(1);
@@ -113,7 +132,10 @@ export default function App() {
   const [structures, setStructures] = useState<StructuresDict>({});
 
   const [coords, setCoords] = useState<{ x: number; y: number; z: number }>(DEFAULT_COORDS);
-  const [overlayAlpha, setOverlayAlpha] = useState<number>(0.4);
+  // transparency: 0.0(不透明・色100%) 〜 1.0(完全透明・色0%)
+  const [transparency, setTransparency] = useState<number>(DEFAULT_TRANSPARENCY);
+  const overlayAlpha = 1 - transparency;
+
   const [tiltAngle, setTiltAngle] = useState<number>(DEFAULT_TILT);
   const [activePreset, setActivePreset] = useState<string>('AC-PC');
 
@@ -127,38 +149,71 @@ export default function App() {
     cerebellum: true,
     ventricle: true,
     artery: true,
-    sulci: true
+    sulci: true,
   });
 
-  const [hoveredStructure, setHoveredStructure] = useState<{ id: number; info: StructureInfo; x: number; y: number } | null>(null);
-  const [selectedStructure, setSelectedStructure] = useState<{ id: number; info: StructureInfo } | null>(null);
+  const [hoveredStructure, setHoveredStructure] = useState<{
+    id: number;
+    info: StructureInfo;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [selectedStructure, setSelectedStructure] = useState<{
+    id: number;
+    info: StructureInfo;
+  } | null>(null);
 
+  // フルスクリーン状態の監視
+  useEffect(() => {
+    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', onFsChange);
+    return () => document.removeEventListener('fullscreenchange', onFsChange);
+  }, []);
+
+  const toggleLandscapeFullscreen = async () => {
+    const orient = screen.orientation as ScreenOrientation & {
+      lock?: (o: string) => Promise<void>;
+      unlock?: () => void;
+    };
+    try {
+      if (!document.fullscreenElement) {
+        if (document.documentElement.requestFullscreen) {
+          await document.documentElement.requestFullscreen();
+        }
+        await orient?.lock?.('landscape').catch(() => {});
+      } else {
+        orient?.unlock?.();
+        await document.exitFullscreen();
+      }
+    } catch {
+      // iOSなどFullscreen API非対応端末では何もしない
+    }
+  };
+
+  // 構造辞書＆ラベルボリューム初期読込（.bin.gz 自動解凍）
   useEffect(() => {
     fetch('/structures_u16.json')
       .then((res) => res.json())
       .then((data: StructuresDict) => setStructures(data))
       .catch((err) => console.error('structures_u16.json 読込失敗:', err));
 
-    fetch('/brain_label_u16.bin')
-      .then((res) => res.arrayBuffer())
+    fetchGzipBin('/brain_label_u16.bin.gz')
       .then((buf) => setLabelData(new Uint16Array(buf)))
-      .catch((err) => console.error('brain_label_u16.bin 読込失敗:', err));
+      .catch((err) => console.error('brain_label_u16.bin.gz 読込失敗:', err));
 
-    fetch('/brain_stem_micro_u16.bin')
-      .then((res) => res.arrayBuffer())
+    fetchGzipBin('/brain_stem_micro_u16.bin.gz')
       .then((buf) => setStemMicroData(new Uint16Array(buf)))
-      .catch((err) => console.error('brain_stem_micro_u16.bin 読込失敗:', err));
+      .catch((err) => console.error('brain_stem_micro_u16.bin.gz 読込失敗:', err));
 
-    fetch('/brain_sulci_u16.bin')
-      .then((res) => res.arrayBuffer())
+    fetchGzipBin('/brain_sulci_u16.bin.gz')
       .then((buf) => setSulciData(new Uint16Array(buf)))
-      .catch((err) => console.error('brain_sulci_u16.bin 読込失敗:', err));
+      .catch((err) => console.error('brain_sulci_u16.bin.gz 読込失敗:', err));
   }, []);
 
+  // MRIシーケンス読込
   useEffect(() => {
-    const fileName = `brain_${mriSeq}.bin`;
-    fetch(`/${fileName}`)
-      .then((res) => res.arrayBuffer())
+    const fileName = `brain_${mriSeq}.bin.gz`;
+    fetchGzipBin(`/${fileName}`)
       .then((buf) => setRawMriData(new Uint8Array(buf)))
       .catch((err) => console.error(`${fileName} 読込失敗:`, err));
 
@@ -195,7 +250,7 @@ export default function App() {
         startY: 0,
         startPanX: panOffset.x,
         startPanY: panOffset.y,
-        moved: true
+        moved: true,
       };
     } else if (e.touches.length === 1 && zoomScale > 1) {
       touchStateRef.current = {
@@ -206,7 +261,7 @@ export default function App() {
         startY: e.touches[0].clientY,
         startPanX: panOffset.x,
         startPanY: panOffset.y,
-        moved: false
+        moved: false,
       };
     } else {
       touchStateRef.current.mode = 'none';
@@ -237,7 +292,7 @@ export default function App() {
       const maxPan = 220 * (zoomScale - 1);
       setPanOffset({
         x: Math.max(-maxPan, Math.min(maxPan, st.startPanX + dx)),
-        y: Math.max(-maxPan, Math.min(maxPan, st.startPanY + dy))
+        y: Math.max(-maxPan, Math.min(maxPan, st.startPanY + dy)),
       });
     }
   };
@@ -255,43 +310,49 @@ export default function App() {
     return cz + cy * DIMS.z + cx * DIMS.z * DIMS.y;
   };
 
-  const sampleMriTrilinear = useCallback((fx: number, fy: number, fz: number): number => {
-    if (!rawMriData) return 0;
-    if (fx < 0 || fx >= DIMS.x || fy < 0 || fy >= DIMS.y || fz < 0 || fz >= DIMS.z) return 0;
-    const x0 = Math.max(0, Math.min(DIMS.x - 1, Math.floor(fx)));
-    const x1 = Math.min(DIMS.x - 1, x0 + 1);
-    const y0 = Math.max(0, Math.min(DIMS.y - 1, Math.floor(fy)));
-    const y1 = Math.min(DIMS.y - 1, y0 + 1);
-    const z0 = Math.max(0, Math.min(DIMS.z - 1, Math.floor(fz)));
-    const z1 = Math.min(DIMS.z - 1, z0 + 1);
-    const dx = fx - x0;
-    const dy = fy - y0;
-    const dz = fz - z0;
+  const sampleMriTrilinear = useCallback(
+    (fx: number, fy: number, fz: number): number => {
+      if (!rawMriData) return 0;
+      if (fx < 0 || fx >= DIMS.x || fy < 0 || fy >= DIMS.y || fz < 0 || fz >= DIMS.z) return 0;
+      const x0 = Math.max(0, Math.min(DIMS.x - 1, Math.floor(fx)));
+      const x1 = Math.min(DIMS.x - 1, x0 + 1);
+      const y0 = Math.max(0, Math.min(DIMS.y - 1, Math.floor(fy)));
+      const y1 = Math.min(DIMS.y - 1, y0 + 1);
+      const z0 = Math.max(0, Math.min(DIMS.z - 1, Math.floor(fz)));
+      const z1 = Math.min(DIMS.z - 1, z0 + 1);
+      const dx = fx - x0;
+      const dy = fy - y0;
+      const dz = fz - z0;
 
-    const c000 = rawMriData[z0 + y0 * DIMS.z + x0 * DIMS.z * DIMS.y] || 0;
-    const c100 = rawMriData[z0 + y0 * DIMS.z + x1 * DIMS.z * DIMS.y] || 0;
-    const c010 = rawMriData[z0 + y1 * DIMS.z + x0 * DIMS.z * DIMS.y] || 0;
-    const c110 = rawMriData[z0 + y1 * DIMS.z + x1 * DIMS.z * DIMS.y] || 0;
-    const c001 = rawMriData[z1 + y0 * DIMS.z + x0 * DIMS.z * DIMS.y] || 0;
-    const c101 = rawMriData[z1 + y0 * DIMS.z + x1 * DIMS.z * DIMS.y] || 0;
-    const c011 = rawMriData[z1 + y1 * DIMS.z + x0 * DIMS.z * DIMS.y] || 0;
-    const c111 = rawMriData[z1 + y1 * DIMS.z + x1 * DIMS.z * DIMS.y] || 0;
+      const c000 = rawMriData[z0 + y0 * DIMS.z + x0 * DIMS.z * DIMS.y] || 0;
+      const c100 = rawMriData[z0 + y0 * DIMS.z + x1 * DIMS.z * DIMS.y] || 0;
+      const c010 = rawMriData[z0 + y1 * DIMS.z + x0 * DIMS.z * DIMS.y] || 0;
+      const c110 = rawMriData[z0 + y1 * DIMS.z + x1 * DIMS.z * DIMS.y] || 0;
+      const c001 = rawMriData[z1 + y0 * DIMS.z + x0 * DIMS.z * DIMS.y] || 0;
+      const c101 = rawMriData[z1 + y0 * DIMS.z + x1 * DIMS.z * DIMS.y] || 0;
+      const c011 = rawMriData[z1 + y1 * DIMS.z + x0 * DIMS.z * DIMS.y] || 0;
+      const c111 = rawMriData[z1 + y1 * DIMS.z + x1 * DIMS.z * DIMS.y] || 0;
 
-    const c00 = c000 * (1 - dx) + c100 * dx;
-    const c10 = c010 * (1 - dx) + c110 * dx;
-    const c01 = c001 * (1 - dx) + c101 * dx;
-    const c11 = c011 * (1 - dx) + c111 * dx;
+      const c00 = c000 * (1 - dx) + c100 * dx;
+      const c10 = c010 * (1 - dx) + c110 * dx;
+      const c01 = c001 * (1 - dx) + c101 * dx;
+      const c11 = c011 * (1 - dx) + c111 * dx;
 
-    const c0 = c00 * (1 - dy) + c10 * dy;
-    const c1 = c01 * (1 - dy) + c11 * dy;
+      const c0 = c00 * (1 - dy) + c10 * dy;
+      const c1 = c01 * (1 - dy) + c11 * dy;
 
-    return c0 * (1 - dz) + c1 * dz;
-  }, [rawMriData]);
+      return c0 * (1 - dz) + c1 * dz;
+    },
+    [rawMriData]
+  );
 
-  const isLayerVisible = useCallback((id: number) => {
-    if (id === 0) return false;
-    return !!visibleLayers[getCategoryInfo(id, structures[String(id)]?.name).key];
-  }, [visibleLayers, structures]);
+  const isLayerVisible = useCallback(
+    (id: number) => {
+      if (id === 0) return false;
+      return !!visibleLayers[getCategoryInfo(id, structures[String(id)]?.name).key];
+    },
+    [visibleLayers, structures]
+  );
 
   const blendMraPixel = (mriVal: number, lId: number): [number, number, number] => {
     if (lId >= 900 && lId < 1000 && structures[String(lId)] && mriVal > 35) {
@@ -313,6 +374,7 @@ export default function App() {
       ? mobileTab
       : 'ortho';
 
+  // 内包・脳幹 拡大ビュー描画
   const renderZoomView = useCallback(() => {
     if (!zoomCanvasRef.current || !rawMriData || !labelData || activeZoomMode === 'ortho') return;
     const canvas = zoomCanvasRef.current;
@@ -321,15 +383,17 @@ export default function App() {
 
     const W = ZOOM_RES;
     const H = ZOOM_RES;
-    canvas.width = W;
-    canvas.height = H;
+    if (canvas.width !== W || canvas.height !== H) {
+      canvas.width = W;
+      canvas.height = H;
+    }
     const imgData = ctx.createImageData(W, H);
     const d = imgData.data;
 
-    const xMin = activeZoomMode === 'ic_zoom' ? 58 : 46;
-    const xMax = activeZoomMode === 'ic_zoom' ? 98 : 82;
-    const yMin = activeZoomMode === 'ic_zoom' ? 46 : 38;
-    const yMax = activeZoomMode === 'ic_zoom' ? 86 : 74;
+    const xMin = (activeZoomMode === 'ic_zoom' ? 58 : 46) * VOL_SCALE;
+    const xMax = (activeZoomMode === 'ic_zoom' ? 98 : 82) * VOL_SCALE;
+    const yMin = (activeZoomMode === 'ic_zoom' ? 46 : 38) * VOL_SCALE;
+    const yMax = (activeZoomMode === 'ic_zoom' ? 86 : 74) * VOL_SCALE;
 
     const tiltRad = (tiltAngle * Math.PI) / 180;
     const cosTilt = Math.cos(tiltRad);
@@ -367,7 +431,7 @@ export default function App() {
           }
         }
 
-        if (fx >= 64 && targetId > 0 && structures[String(targetId)]) {
+        if (fx >= HALF_X && targetId > 0 && structures[String(targetId)]) {
           const [cr, cg, cb] = structures[String(targetId)].color;
           const a = overlayAlpha * 0.85;
           d[pIdx] = Math.round(mriVal * (1 - a) + cr * a);
@@ -381,8 +445,20 @@ export default function App() {
       }
     }
     ctx.putImageData(imgData, 0, 0);
-  }, [rawMriData, labelData, stemMicroData, activeZoomMode, coords.y, coords.z, tiltAngle, overlayAlpha, structures, sampleMriTrilinear]);
+  }, [
+    rawMriData,
+    labelData,
+    stemMicroData,
+    activeZoomMode,
+    coords.y,
+    coords.z,
+    tiltAngle,
+    overlayAlpha,
+    structures,
+    sampleMriTrilinear,
+  ]);
 
+  // 3断面（Axial / Coronal / Sagittal）＆ MRA 2D MIP 描画
   const renderViews = useCallback(() => {
     if (!rawMriData || !labelData) return;
 
@@ -391,7 +467,8 @@ export default function App() {
         const canvas = axialCanvasRef.current;
         const ctx = canvas.getContext('2d');
         if (ctx) {
-          canvas.width = DIMS.x; canvas.height = DIMS.y;
+          canvas.width = DIMS.x;
+          canvas.height = DIMS.y;
           const imgData = ctx.createImageData(DIMS.x, DIMS.y);
           const d = imgData.data;
           const labelMap = mraAxialLabelMapRef.current;
@@ -400,8 +477,9 @@ export default function App() {
             const vy = DIMS.y - 1 - py;
             for (let px = 0; px < DIMS.x; px++) {
               const vx = px;
-              let maxVal = 0; let bestLid = 0;
-              for (let vz = 5; vz < DIMS.z - 10; vz++) {
+              let maxVal = 0;
+              let bestLid = 0;
+              for (let vz = 8; vz < DIMS.z - 15; vz++) {
                 const vIdx = getVoxelIdx(vx, vy, vz);
                 const val = rawMriData[vIdx] || 0;
                 const lId = labelData[vIdx] || 0;
@@ -411,7 +489,10 @@ export default function App() {
               labelMap[py * DIMS.x + px] = bestLid;
               const [r, g, b] = blendMraPixel(maxVal, bestLid);
               const pIdx = (py * DIMS.x + px) * 4;
-              d[pIdx] = r; d[pIdx + 1] = g; d[pIdx + 2] = b; d[pIdx + 3] = 255;
+              d[pIdx] = r;
+              d[pIdx + 1] = g;
+              d[pIdx + 2] = b;
+              d[pIdx + 3] = 255;
             }
           }
           ctx.putImageData(imgData, 0, 0);
@@ -421,15 +502,17 @@ export default function App() {
         const canvas = coronalCanvasRef.current;
         const ctx = canvas.getContext('2d');
         if (ctx) {
-          canvas.width = DIMS.x; canvas.height = DIMS.z;
+          canvas.width = DIMS.x;
+          canvas.height = DIMS.z;
           const imgData = ctx.createImageData(DIMS.x, DIMS.z);
           const d = imgData.data;
           for (let pz = 0; pz < DIMS.z; pz++) {
             const vz = DIMS.z - 1 - pz;
             for (let px = 0; px < DIMS.x; px++) {
               const vx = px;
-              let maxVal = 0; let bestLid = 0;
-              for (let vy = 10; vy < DIMS.y - 10; vy++) {
+              let maxVal = 0;
+              let bestLid = 0;
+              for (let vy = 15; vy < DIMS.y - 15; vy++) {
                 const vIdx = getVoxelIdx(vx, vy, vz);
                 const val = rawMriData[vIdx] || 0;
                 const lId = labelData[vIdx] || 0;
@@ -438,7 +521,10 @@ export default function App() {
               }
               const [r, g, b] = blendMraPixel(maxVal, bestLid);
               const pIdx = (pz * DIMS.x + px) * 4;
-              d[pIdx] = r; d[pIdx + 1] = g; d[pIdx + 2] = b; d[pIdx + 3] = 255;
+              d[pIdx] = r;
+              d[pIdx + 1] = g;
+              d[pIdx + 2] = b;
+              d[pIdx + 3] = 255;
             }
           }
           ctx.putImageData(imgData, 0, 0);
@@ -448,15 +534,17 @@ export default function App() {
         const canvas = sagittalCanvasRef.current;
         const ctx = canvas.getContext('2d');
         if (ctx) {
-          canvas.width = DIMS.y; canvas.height = DIMS.z;
+          canvas.width = DIMS.y;
+          canvas.height = DIMS.z;
           const imgData = ctx.createImageData(DIMS.y, DIMS.z);
           const d = imgData.data;
           for (let pz = 0; pz < DIMS.z; pz++) {
             const vz = DIMS.z - 1 - pz;
             for (let py = 0; py < DIMS.y; py++) {
               const vy = DIMS.y - 1 - py;
-              let maxVal = 0; let bestLid = 0;
-              for (let vx = 15; vx < DIMS.x - 15; vx++) {
+              let maxVal = 0;
+              let bestLid = 0;
+              for (let vx = 22; vx < DIMS.x - 22; vx++) {
                 const vIdx = getVoxelIdx(vx, vy, vz);
                 const val = rawMriData[vIdx] || 0;
                 const lId = labelData[vIdx] || 0;
@@ -465,7 +553,10 @@ export default function App() {
               }
               const [r, g, b] = blendMraPixel(maxVal, bestLid);
               const pIdx = (pz * DIMS.y + py) * 4;
-              d[pIdx] = r; d[pIdx + 1] = g; d[pIdx + 2] = b; d[pIdx + 3] = 255;
+              d[pIdx] = r;
+              d[pIdx + 1] = g;
+              d[pIdx + 2] = b;
+              d[pIdx + 3] = 255;
             }
           }
           ctx.putImageData(imgData, 0, 0);
@@ -479,189 +570,235 @@ export default function App() {
     const sinTilt = Math.sin(tiltRad);
     const tanTilt = Math.tan(tiltRad);
 
-  // 1. Axial（高解像度・Trilinear補間）
- if (axialCanvasRef.current) {
-   const canvas = axialCanvasRef.current;
-   const ctx = canvas.getContext('2d');
-   if (ctx) {
-     const W = SLICE_RES;
-     const H = SLICE_RES;
-     if (canvas.width !== W || canvas.height !== H) {
-       canvas.width = W;
-       canvas.height = H;
-     }
-     const imgData = ctx.createImageData(W, H);
-     const d = imgData.data;
+    // 1. Axial（軸位断・高解像度・Trilinear補間）
+    if (axialCanvasRef.current) {
+      const canvas = axialCanvasRef.current;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        const W = SLICE_RES;
+        const H = SLICE_RES;
+        if (canvas.width !== W || canvas.height !== H) {
+          canvas.width = W;
+          canvas.height = H;
+        }
+        const imgData = ctx.createImageData(W, H);
+        const d = imgData.data;
 
-     for (let py = 0; py < H; py++) {
-       const planeY = (DIMS.y - 1) - ((py + 0.5) / H) * DIMS.y;
-       const distFromPivot = planeY - coords.y;
-       const vy = coords.y + distFromPivot * cosTilt;
-       const vz = coords.z + distFromPivot * sinTilt;
+        for (let py = 0; py < H; py++) {
+          const planeY = DIMS.y - 1 - ((py + 0.5) / H) * DIMS.y;
+          const distFromPivot = planeY - coords.y;
+          const vy = coords.y + distFromPivot * cosTilt;
+          const vz = coords.z + distFromPivot * sinTilt;
 
-       for (let px = 0; px < W; px++) {
-         const fx = ((px + 0.5) / W) * DIMS.x;
-         const pIdx = (py * W + px) * 4;
-         if (vy < 0 || vy >= DIMS.y || vz < 0 || vz >= DIMS.z) {
-           d[pIdx] = d[pIdx + 1] = d[pIdx + 2] = 0; d[pIdx + 3] = 255;
-           continue;
-         }
-         const mriVal = Math.round(sampleMriTrilinear(fx, vy, vz));
-         const vIdx = getVoxelIdx(fx, vy, vz);
-         const lId = labelData[vIdx] || 0;
-         const sId = sulciData ? (sulciData[vIdx] || 0) : 0;
+          for (let px = 0; px < W; px++) {
+            const fx = ((px + 0.5) / W) * DIMS.x;
+            const pIdx = (py * W + px) * 4;
+            if (vy < 0 || vy >= DIMS.y || vz < 0 || vz >= DIMS.z) {
+              d[pIdx] = d[pIdx + 1] = d[pIdx + 2] = 0;
+              d[pIdx + 3] = 255;
+              continue;
+            }
+            const mriVal = Math.round(sampleMriTrilinear(fx, vy, vz));
+            const vIdx = getVoxelIdx(fx, vy, vz);
+            const lId = labelData[vIdx] || 0;
+            const sId = sulciData ? sulciData[vIdx] || 0 : 0;
 
-         if (fx >= 64 && visibleLayers.sulci && sId > 0 && structures[String(sId)]) {
-           const [sr, sg, sb] = structures[String(sId)].color;
-           d[pIdx] = sr; d[pIdx + 1] = sg; d[pIdx + 2] = sb; d[pIdx + 3] = 255;
-         } else if (fx >= 64 && lId > 0 && isLayerVisible(lId) && structures[String(lId)]) {
-           const [cr, cg, cb] = structures[String(lId)].color;
-           const a = overlayAlpha;
-           d[pIdx] = Math.round(mriVal * (1 - a) + cr * a);
-           d[pIdx + 1] = Math.round(mriVal * (1 - a) + cg * a);
-           d[pIdx + 2] = Math.round(mriVal * (1 - a) + cb * a);
-           d[pIdx + 3] = 255;
-         } else {
-           d[pIdx] = d[pIdx + 1] = d[pIdx + 2] = mriVal;
-           d[pIdx + 3] = 255;
-         }
-       }
-     }
-     ctx.putImageData(imgData, 0, 0);
+            if (fx >= HALF_X && visibleLayers.sulci && sId > 0 && structures[String(sId)]) {
+              const [sr, sg, sb] = structures[String(sId)].color;
+              const a = overlayAlpha;
+              d[pIdx] = Math.round(mriVal * (1 - a) + sr * a);
+              d[pIdx + 1] = Math.round(mriVal * (1 - a) + sg * a);
+              d[pIdx + 2] = Math.round(mriVal * (1 - a) + sb * a);
+              d[pIdx + 3] = 255;
+            } else if (fx >= HALF_X && lId > 0 && isLayerVisible(lId) && structures[String(lId)]) {
+              const [cr, cg, cb] = structures[String(lId)].color;
+              const a = overlayAlpha;
+              d[pIdx] = Math.round(mriVal * (1 - a) + cr * a);
+              d[pIdx + 1] = Math.round(mriVal * (1 - a) + cg * a);
+              d[pIdx + 2] = Math.round(mriVal * (1 - a) + cb * a);
+              d[pIdx + 3] = 255;
+            } else {
+              d[pIdx] = d[pIdx + 1] = d[pIdx + 2] = mriVal;
+              d[pIdx + 3] = 255;
+            }
+          }
+        }
+        ctx.putImageData(imgData, 0, 0);
 
-     const cx = ((coords.x + 0.5) / DIMS.x) * W;
-     const cy = ((DIMS.y - 1 - coords.y + 0.5) / DIMS.y) * H;
-     ctx.setLineDash([]);
-     ctx.lineWidth = 0.8;
-     ctx.strokeStyle = 'rgba(255, 152, 0, 0.95)';
-     ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, H); ctx.stroke();
-     ctx.strokeStyle = 'rgba(76, 175, 80, 0.95)';
-     ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(W, cy); ctx.stroke();
-   }
- }
+        const cx = ((coords.x + 0.5) / DIMS.x) * W;
+        const cy = ((DIMS.y - 1 - coords.y + 0.5) / DIMS.y) * H;
+        ctx.setLineDash([]);
+        ctx.lineWidth = 0.8;
+        ctx.strokeStyle = 'rgba(255, 152, 0, 0.95)';
+        ctx.beginPath();
+        ctx.moveTo(cx, 0);
+        ctx.lineTo(cx, H);
+        ctx.stroke();
+        ctx.strokeStyle = 'rgba(76, 175, 80, 0.95)';
+        ctx.beginPath();
+        ctx.moveTo(0, cy);
+        ctx.lineTo(W, cy);
+        ctx.stroke();
+      }
+    }
 
- if (activeZoomMode !== 'ortho') {
-   renderZoomView();
- }
+    if (activeZoomMode !== 'ortho') {
+      renderZoomView();
+    }
 
- // 2. Coronal（高解像度・Trilinear補間）
- if (coronalCanvasRef.current) {
-   const canvas = coronalCanvasRef.current;
-   const ctx = canvas.getContext('2d');
-   if (ctx) {
-     const W = SLICE_RES;
-     const H = SLICE_RES;
-     if (canvas.width !== W || canvas.height !== H) {
-       canvas.width = W;
-       canvas.height = H;
-     }
-     const imgData = ctx.createImageData(W, H);
-     const d = imgData.data;
+    // 2. Coronal（冠状断・高解像度・Trilinear補間）
+    if (coronalCanvasRef.current) {
+      const canvas = coronalCanvasRef.current;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        const W = SLICE_RES;
+        const H = SLICE_RES;
+        if (canvas.width !== W || canvas.height !== H) {
+          canvas.width = W;
+          canvas.height = H;
+        }
+        const imgData = ctx.createImageData(W, H);
+        const d = imgData.data;
 
-     for (let pz = 0; pz < H; pz++) {
-       const fz = (DIMS.z - 1) - ((pz + 0.5) / H) * DIMS.z;
-       for (let px = 0; px < W; px++) {
-         const fx = ((px + 0.5) / W) * DIMS.x;
-         const pIdx = (pz * W + px) * 4;
-         const mriVal = Math.round(sampleMriTrilinear(fx, coords.y, fz));
-         const vIdx = getVoxelIdx(fx, coords.y, fz);
-         const lId = labelData[vIdx] || 0;
-         const sId = sulciData ? (sulciData[vIdx] || 0) : 0;
+        for (let pz = 0; pz < H; pz++) {
+          const fz = DIMS.z - 1 - ((pz + 0.5) / H) * DIMS.z;
+          for (let px = 0; px < W; px++) {
+            const fx = ((px + 0.5) / W) * DIMS.x;
+            const pIdx = (pz * W + px) * 4;
+            const mriVal = Math.round(sampleMriTrilinear(fx, coords.y, fz));
+            const vIdx = getVoxelIdx(fx, coords.y, fz);
+            const lId = labelData[vIdx] || 0;
+            const sId = sulciData ? sulciData[vIdx] || 0 : 0;
 
-         if (fx >= 64 && visibleLayers.sulci && sId > 0 && structures[String(sId)]) {
-           const [sr, sg, sb] = structures[String(sId)].color;
-           d[pIdx] = sr; d[pIdx + 1] = sg; d[pIdx + 2] = sb; d[pIdx + 3] = 255;
-         } else if (fx >= 64 && lId > 0 && isLayerVisible(lId) && structures[String(lId)]) {
-           const [cr, cg, cb] = structures[String(lId)].color;
-           const a = overlayAlpha;
-           d[pIdx] = Math.round(mriVal * (1 - a) + cr * a);
-           d[pIdx + 1] = Math.round(mriVal * (1 - a) + cg * a);
-           d[pIdx + 2] = Math.round(mriVal * (1 - a) + cb * a);
-           d[pIdx + 3] = 255;
-         } else {
-           d[pIdx] = d[pIdx + 1] = d[pIdx + 2] = mriVal;
-           d[pIdx + 3] = 255;
-         }
-       }
-     }
-     ctx.putImageData(imgData, 0, 0);
+            if (fx >= HALF_X && visibleLayers.sulci && sId > 0 && structures[String(sId)]) {
+              const [sr, sg, sb] = structures[String(sId)].color;
+              const a = overlayAlpha;
+              d[pIdx] = Math.round(mriVal * (1 - a) + sr * a);
+              d[pIdx + 1] = Math.round(mriVal * (1 - a) + sg * a);
+              d[pIdx + 2] = Math.round(mriVal * (1 - a) + sb * a);
+              d[pIdx + 3] = 255;
+            } else if (fx >= HALF_X && lId > 0 && isLayerVisible(lId) && structures[String(lId)]) {
+              const [cr, cg, cb] = structures[String(lId)].color;
+              const a = overlayAlpha;
+              d[pIdx] = Math.round(mriVal * (1 - a) + cr * a);
+              d[pIdx + 1] = Math.round(mriVal * (1 - a) + cg * a);
+              d[pIdx + 2] = Math.round(mriVal * (1 - a) + cb * a);
+              d[pIdx + 3] = 255;
+            } else {
+              d[pIdx] = d[pIdx + 1] = d[pIdx + 2] = mriVal;
+              d[pIdx + 3] = 255;
+            }
+          }
+        }
+        ctx.putImageData(imgData, 0, 0);
 
-     const cx = ((coords.x + 0.5) / DIMS.x) * W;
-     const cz = ((DIMS.z - 1 - coords.z + 0.5) / DIMS.z) * H;
-     ctx.setLineDash([]);
-     ctx.lineWidth = 0.8;
-     ctx.strokeStyle = 'rgba(255, 152, 0, 0.95)';
-     ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, H); ctx.stroke();
-     ctx.strokeStyle = 'rgba(41, 182, 246, 0.95)';
-     ctx.beginPath(); ctx.moveTo(0, cz); ctx.lineTo(W, cz); ctx.stroke();
-   }
- }
+        const cx = ((coords.x + 0.5) / DIMS.x) * W;
+        const cz = ((DIMS.z - 1 - coords.z + 0.5) / DIMS.z) * H;
+        ctx.setLineDash([]);
+        ctx.lineWidth = 0.8;
+        ctx.strokeStyle = 'rgba(255, 152, 0, 0.95)';
+        ctx.beginPath();
+        ctx.moveTo(cx, 0);
+        ctx.lineTo(cx, H);
+        ctx.stroke();
+        ctx.strokeStyle = 'rgba(41, 182, 246, 0.95)';
+        ctx.beginPath();
+        ctx.moveTo(0, cz);
+        ctx.lineTo(W, cz);
+        ctx.stroke();
+      }
+    }
 
- // 3. Sagittal（高解像度・Trilinear補間）
- if (sagittalCanvasRef.current) {
-   const canvas = sagittalCanvasRef.current;
-   const ctx = canvas.getContext('2d');
-   if (ctx) {
-     const W = SLICE_RES;
-     const H = SLICE_RES;
-     if (canvas.width !== W || canvas.height !== H) {
-       canvas.width = W;
-       canvas.height = H;
-     }
-     const imgData = ctx.createImageData(W, H);
-     const d = imgData.data;
+    // 3. Sagittal（矢状断・高解像度・Trilinear補間）
+    if (sagittalCanvasRef.current) {
+      const canvas = sagittalCanvasRef.current;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        const W = SLICE_RES;
+        const H = SLICE_RES;
+        if (canvas.width !== W || canvas.height !== H) {
+          canvas.width = W;
+          canvas.height = H;
+        }
+        const imgData = ctx.createImageData(W, H);
+        const d = imgData.data;
 
-     for (let pz = 0; pz < H; pz++) {
-       const fz = (DIMS.z - 1) - ((pz + 0.5) / H) * DIMS.z;
-       for (let py = 0; py < W; py++) {
-         const fy = (DIMS.y - 1) - ((py + 0.5) / W) * DIMS.y;
-         const pIdx = (pz * W + py) * 4;
-         const mriVal = Math.round(sampleMriTrilinear(coords.x, fy, fz));
-         const vIdx = getVoxelIdx(coords.x, fy, fz);
-         const lId = labelData[vIdx] || 0;
-         const sId = sulciData ? (sulciData[vIdx] || 0) : 0;
+        for (let pz = 0; pz < H; pz++) {
+          const fz = DIMS.z - 1 - ((pz + 0.5) / H) * DIMS.z;
+          for (let py = 0; py < W; py++) {
+            const fy = DIMS.y - 1 - ((py + 0.5) / W) * DIMS.y;
+            const pIdx = (pz * W + py) * 4;
+            const mriVal = Math.round(sampleMriTrilinear(coords.x, fy, fz));
+            const vIdx = getVoxelIdx(coords.x, fy, fz);
+            const lId = labelData[vIdx] || 0;
+            const sId = sulciData ? sulciData[vIdx] || 0 : 0;
 
-         if (coords.x >= 64 && visibleLayers.sulci && sId > 0 && structures[String(sId)]) {
-           const [sr, sg, sb] = structures[String(sId)].color;
-           d[pIdx] = sr; d[pIdx + 1] = sg; d[pIdx + 2] = sb; d[pIdx + 3] = 255;
-         } else if (coords.x >= 64 && lId > 0 && isLayerVisible(lId) && structures[String(lId)]) {
-           const [cr, cg, cb] = structures[String(lId)].color;
-           const a = overlayAlpha;
-           d[pIdx] = Math.round(mriVal * (1 - a) + cr * a);
-           d[pIdx + 1] = Math.round(mriVal * (1 - a) + cg * a);
-           d[pIdx + 2] = Math.round(mriVal * (1 - a) + cb * a);
-           d[pIdx + 3] = 255;
-         } else {
-           d[pIdx] = d[pIdx + 1] = d[pIdx + 2] = mriVal;
-           d[pIdx + 3] = 255;
-         }
-       }
-     }
-     ctx.putImageData(imgData, 0, 0);
+            if (coords.x >= HALF_X && visibleLayers.sulci && sId > 0 && structures[String(sId)]) {
+              const [sr, sg, sb] = structures[String(sId)].color;
+              const a = overlayAlpha;
+              d[pIdx] = Math.round(mriVal * (1 - a) + sr * a);
+              d[pIdx + 1] = Math.round(mriVal * (1 - a) + sg * a);
+              d[pIdx + 2] = Math.round(mriVal * (1 - a) + sb * a);
+              d[pIdx + 3] = 255;
+            } else if (coords.x >= HALF_X && lId > 0 && isLayerVisible(lId) && structures[String(lId)]) {
+              const [cr, cg, cb] = structures[String(lId)].color;
+              const a = overlayAlpha;
+              d[pIdx] = Math.round(mriVal * (1 - a) + cr * a);
+              d[pIdx + 1] = Math.round(mriVal * (1 - a) + cg * a);
+              d[pIdx + 2] = Math.round(mriVal * (1 - a) + cb * a);
+              d[pIdx + 3] = 255;
+            } else {
+              d[pIdx] = d[pIdx + 1] = d[pIdx + 2] = mriVal;
+              d[pIdx + 3] = 255;
+            }
+          }
+        }
+        ctx.putImageData(imgData, 0, 0);
 
-     const cy = ((DIMS.y - 1 - coords.y + 0.5) / DIMS.y) * W;
-     const cz = ((DIMS.z - 1 - coords.z + 0.5) / DIMS.z) * H;
-     ctx.setLineDash([]);
-     ctx.lineWidth = 0.8;
-     ctx.strokeStyle = 'rgba(76, 175, 80, 0.95)';
-     ctx.beginPath(); ctx.moveTo(cy, 0); ctx.lineTo(cy, H); ctx.stroke();
-     ctx.strokeStyle = 'rgba(41, 182, 246, 0.95)';
-     ctx.beginPath(); ctx.moveTo(0, cz); ctx.lineTo(W, cz); ctx.stroke();
+        const cy = ((DIMS.y - 1 - coords.y + 0.5) / DIMS.y) * W;
+        const cz = ((DIMS.z - 1 - coords.z + 0.5) / DIMS.z) * H;
+        ctx.setLineDash([]);
+        ctx.lineWidth = 0.8;
+        ctx.strokeStyle = 'rgba(76, 175, 80, 0.95)';
+        ctx.beginPath();
+        ctx.moveTo(cy, 0);
+        ctx.lineTo(cy, H);
+        ctx.stroke();
+        ctx.strokeStyle = 'rgba(41, 182, 246, 0.95)';
+        ctx.beginPath();
+        ctx.moveTo(0, cz);
+        ctx.lineTo(W, cz);
+        ctx.stroke();
 
-     ctx.strokeStyle = 'rgba(255, 235, 59, 0.95)';
-     ctx.lineWidth = 1.0;
-     ctx.beginPath();
-     for (let py = 0; py < W; py++) {
-       const vy = (DIMS.y - 1) - ((py + 0.5) / W) * DIMS.y;
-       const lineVz = coords.z + (vy - coords.y) * tanTilt;
-       const linePz = ((DIMS.z - 1 - lineVz + 0.5) / DIMS.z) * H;
-       if (py === 0) ctx.moveTo(py, linePz);
-       else ctx.lineTo(py, linePz);
-     }
-     ctx.stroke();
-   }
- }
-  }, [rawMriData, labelData, sulciData, structures, coords, overlayAlpha, tiltAngle, mriSeq, activeZoomMode, mobileTab, visibleLayers.sulci, isLayerVisible, renderZoomView]);
+        ctx.strokeStyle = 'rgba(255, 235, 59, 0.95)';
+        ctx.lineWidth = 1.0;
+        ctx.beginPath();
+        for (let py = 0; py < W; py++) {
+          const vy = DIMS.y - 1 - ((py + 0.5) / W) * DIMS.y;
+          const lineVz = coords.z + (vy - coords.y) * tanTilt;
+          const linePz = ((DIMS.z - 1 - lineVz + 0.5) / DIMS.z) * H;
+          if (py === 0) ctx.moveTo(py, linePz);
+          else ctx.lineTo(py, linePz);
+        }
+        ctx.stroke();
+      }
+    }
+  }, [
+    rawMriData,
+    labelData,
+    sulciData,
+    structures,
+    coords,
+    overlayAlpha,
+    tiltAngle,
+    mriSeq,
+    activeZoomMode,
+    mobileTab,
+    visibleLayers.sulci,
+    isLayerVisible,
+    renderZoomView,
+    sampleMriTrilinear,
+  ]);
 
   useEffect(() => {
     renderViews();
@@ -708,15 +845,9 @@ export default function App() {
     };
   }, [mriSeq, subViewMode, mobileTab]);
 
-  useEffect(() => {
-    const orient = screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> };
-    orient?.lock?.('landscape').catch(() => {});
-  }, []);
-
-  // 水平断：マウスホバー＆クリック・スマホタップ対応（CSS transform拡大後も座標一致）
+  // 軸位断：マウスホバー＆クリック・スマホタップ対応
   const inspectAxialPointer = (e: React.PointerEvent<HTMLCanvasElement>, selectOnHit: boolean) => {
     if (!labelData || !axialCanvasRef.current) return;
-    // スマホでドラッグ移動やピンチ直後の場合はタップ誤爆を防ぐ
     if (e.pointerType !== 'mouse' && !selectOnHit) return;
     if (touchStateRef.current.moved) return;
 
@@ -748,7 +879,7 @@ export default function App() {
     const vz = coords.z + distFromPivot * Math.sin(tiltRad);
 
     if (selectOnHit && e.pointerType === 'mouse') {
-      console.log(`[${px}, ${Math.round(vy)}, ${Math.round(vz)}], // クリック点 (誤差補正済)`);
+      console.log(`[${px}, ${Math.round(vy)}, ${Math.round(vz)}], // クリック点 (192基準)`);
     }
 
     const vIdx = getVoxelIdx(px, vy, vz);
@@ -778,10 +909,10 @@ export default function App() {
     if (touchStateRef.current.moved) return;
 
     const rect = zoomCanvasRef.current.getBoundingClientRect();
-    const xMin = activeZoomMode === 'ic_zoom' ? 58 : 46;
-    const xMax = activeZoomMode === 'ic_zoom' ? 98 : 82;
-    const yMin = activeZoomMode === 'ic_zoom' ? 46 : 38;
-    const yMax = activeZoomMode === 'ic_zoom' ? 86 : 74;
+    const xMin = (activeZoomMode === 'ic_zoom' ? 58 : 46) * VOL_SCALE;
+    const xMax = (activeZoomMode === 'ic_zoom' ? 98 : 82) * VOL_SCALE;
+    const yMin = (activeZoomMode === 'ic_zoom' ? 46 : 38) * VOL_SCALE;
+    const yMax = (activeZoomMode === 'ic_zoom' ? 86 : 74) * VOL_SCALE;
 
     const fx = xMin + ((e.clientX - rect.left) / rect.width) * (xMax - xMin);
     const planeY = yMax - ((e.clientY - rect.top) / rect.height) * (yMax - yMin);
@@ -791,7 +922,7 @@ export default function App() {
     const realVy = coords.y + distFromPivot * Math.cos(tiltRad);
     const realVz = coords.z + distFromPivot * Math.sin(tiltRad);
 
-    if (fx < 64 || realVy < 0 || realVy >= DIMS.y || realVz < 0 || realVz >= DIMS.z) {
+    if (fx < HALF_X || realVy < 0 || realVy >= DIMS.y || realVz < 0 || realVz >= DIMS.z) {
       setHoveredStructure(null);
       return;
     }
@@ -829,7 +960,9 @@ export default function App() {
 
   const setAllLayers = (value: boolean) => {
     const next: Record<string, boolean> = {};
-    LAYER_ITEMS.forEach((item) => { next[item.key] = value; });
+    LAYER_ITEMS.forEach((item) => {
+      next[item.key] = value;
+    });
     setVisibleLayers(next);
   };
 
@@ -846,31 +979,49 @@ export default function App() {
   const applyPreset = (preset: 'AC-PC' | 'CC line' | 'RBL' | 'OML') => {
     setActivePreset(preset);
     switch (preset) {
-      case 'AC-PC': setTiltAngle(0); setCoords((prev) => ({ ...prev, z: 54 })); break;
-      case 'CC line': setTiltAngle(-5); setCoords((prev) => ({ ...prev, z: 52 })); break;
-      case 'RBL': setTiltAngle(-15); setCoords((prev) => ({ ...prev, z: 46 })); break;
-      case 'OML': setTiltAngle(-20); setCoords((prev) => ({ ...prev, z: 42 })); break;
+      case 'AC-PC':
+        setTiltAngle(0);
+        setCoords((prev) => ({ ...prev, z: 81 }));
+        break;
+      case 'CC line':
+        setTiltAngle(-5);
+        setCoords((prev) => ({ ...prev, z: 78 }));
+        break;
+      case 'RBL':
+        setTiltAngle(-15);
+        setCoords((prev) => ({ ...prev, z: 69 }));
+        break;
+      case 'OML':
+        setTiltAngle(-20);
+        setCoords((prev) => ({ ...prev, z: 63 }));
+        break;
     }
   };
 
   const stepCoord = (axis: 'x' | 'y' | 'z', delta: number) => {
     setCoords((prev) => ({
       ...prev,
-      [axis]: Math.max(0, Math.min(DIMS[axis] - 1, prev[axis] + delta))
+      [axis]: Math.max(0, Math.min(DIMS[axis] - 1, prev[axis] + delta)),
     }));
   };
 
   // 1倍時は縦スクロールを許可(pan-y)、拡大中はパン移動を優先(none)
   const canvasInteractiveStyle: React.CSSProperties = {
     transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoomScale})`,
-    touchAction: zoomScale > 1.05 ? 'none' : 'pan-y'
+    touchAction: zoomScale > 1.05 ? 'none' : 'pan-y',
   };
 
   const renderZoomOverlayButtons = () => (
     <div className="zoom-controls-overlay">
-      <button className="zoom-ctrl-btn" onClick={() => adjustZoom(-0.5)} aria-label="縮小">−</button>
-      <button className="zoom-ctrl-btn" onClick={resetZoom}>{zoomScale.toFixed(1)}x</button>
-      <button className="zoom-ctrl-btn" onClick={() => adjustZoom(0.5)} aria-label="拡大">＋</button>
+      <button className="zoom-ctrl-btn" onClick={() => adjustZoom(-0.5)} aria-label="縮小">
+        −
+      </button>
+      <button className="zoom-ctrl-btn" onClick={resetZoom}>
+        {zoomScale.toFixed(1)}x
+      </button>
+      <button className="zoom-ctrl-btn" onClick={() => adjustZoom(0.5)} aria-label="拡大">
+        ＋
+      </button>
     </div>
   );
 
@@ -903,13 +1054,18 @@ export default function App() {
               {LAYER_ITEMS.map((item) => (
                 <button
                   key={item.key}
-                  onClick={() => setVisibleLayers((prev) => ({ ...prev, [item.key]: !prev[item.key] }))}
+                  onClick={() =>
+                    setVisibleLayers((prev) => ({ ...prev, [item.key]: !prev[item.key] }))
+                  }
                   style={{
-                    padding: '2px 6px', fontSize: '11px', borderRadius: '3px', cursor: 'pointer',
+                    padding: '2px 6px',
+                    fontSize: '11px',
+                    borderRadius: '3px',
+                    cursor: 'pointer',
                     border: visibleLayers[item.key] ? `1px solid ${item.color}` : '1px solid #444',
                     backgroundColor: visibleLayers[item.key] ? item.color : '#222',
                     color: visibleLayers[item.key] ? (item.key === 'sulci' ? '#000' : '#fff') : '#777',
-                    fontWeight: visibleLayers[item.key] ? 'bold' : 'normal'
+                    fontWeight: visibleLayers[item.key] ? 'bold' : 'normal',
                   }}
                 >
                   {item.label}
@@ -931,25 +1087,74 @@ export default function App() {
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <strong style={{ fontSize: '13px', color: '#00e5ff' }}>表示レイヤー選択</strong>
                     <div style={{ display: 'flex', gap: '6px' }}>
-                      <button onClick={() => setAllLayers(true)} style={{ fontSize: '11px', padding: '3px 8px', background: '#263238', color: '#fff', border: '1px solid #455a64', borderRadius: '4px' }}>全ON</button>
-                      <button onClick={() => setAllLayers(false)} style={{ fontSize: '11px', padding: '3px 8px', background: '#263238', color: '#fff', border: '1px solid #455a64', borderRadius: '4px' }}>全OFF</button>
-                      <button onClick={() => setIsLayerMenuOpen(false)} style={{ fontSize: '11px', padding: '3px 8px', background: '#b71c1c', color: '#fff', border: 'none', borderRadius: '4px' }}>閉じる</button>
+                      <button
+                        onClick={() => setAllLayers(true)}
+                        style={{
+                          fontSize: '11px',
+                          padding: '3px 8px',
+                          background: '#263238',
+                          color: '#fff',
+                          border: '1px solid #455a64',
+                          borderRadius: '4px',
+                        }}
+                      >
+                        全ON
+                      </button>
+                      <button
+                        onClick={() => setAllLayers(false)}
+                        style={{
+                          fontSize: '11px',
+                          padding: '3px 8px',
+                          background: '#263238',
+                          color: '#fff',
+                          border: '1px solid #455a64',
+                          borderRadius: '4px',
+                        }}
+                      >
+                        全OFF
+                      </button>
+                      <button
+                        onClick={() => setIsLayerMenuOpen(false)}
+                        style={{
+                          fontSize: '11px',
+                          padding: '3px 8px',
+                          background: '#b71c1c',
+                          color: '#fff',
+                          border: 'none',
+                          borderRadius: '4px',
+                        }}
+                      >
+                        閉じる
+                      </button>
                     </div>
                   </div>
                   <div className="layer-popover-grid">
                     {LAYER_ITEMS.map((item) => (
                       <button
                         key={item.key}
-                        onClick={() => setVisibleLayers((prev) => ({ ...prev, [item.key]: !prev[item.key] }))}
+                        onClick={() =>
+                          setVisibleLayers((prev) => ({ ...prev, [item.key]: !prev[item.key] }))
+                        }
                         style={{
-                          padding: '8px 10px', fontSize: '12px', borderRadius: '6px', cursor: 'pointer', textAlign: 'left',
-                          border: visibleLayers[item.key] ? `1px solid ${item.color}` : '1px solid #333',
+                          padding: '8px 10px',
+                          fontSize: '12px',
+                          borderRadius: '6px',
+                          cursor: 'pointer',
+                          textAlign: 'left',
+                          border: visibleLayers[item.key]
+                            ? `1px solid ${item.color}`
+                            : '1px solid #333',
                           backgroundColor: visibleLayers[item.key] ? item.color : '#222',
-                          color: visibleLayers[item.key] ? (item.key === 'sulci' ? '#000' : '#fff') : '#888',
-                          fontWeight: 'bold'
+                          color: visibleLayers[item.key]
+                            ? item.key === 'sulci'
+                              ? '#000'
+                              : '#fff'
+                            : '#888',
+                          fontWeight: 'bold',
                         }}
                       >
-                        {visibleLayers[item.key] ? '✓ ' : ' '}{item.label}
+                        {visibleLayers[item.key] ? '✓ ' : ' '}
+                        {item.label}
                       </button>
                     ))}
                   </div>
@@ -963,17 +1168,37 @@ export default function App() {
           <div className="alpha-control">
             <span style={{ color: '#aaa' }}>透明度:</span>
             <input
-              type="range" min="0.0" max="1.0" step="0.05"
-              value={overlayAlpha}
-              onChange={(e) => setOverlayAlpha(parseFloat(e.target.value))}
+              type="range"
+              min="0.0"
+              max="1.0"
+              step="0.05"
+              value={transparency}
+              onChange={(e) => setTransparency(parseFloat(e.target.value))}
               style={{ width: '75px', cursor: 'pointer' }}
             />
-            <span style={{ width: '28px', color: '#888' }}>{Math.round(overlayAlpha * 100)}%</span>
+            <span style={{ width: '32px', color: '#888' }}>{Math.round(transparency * 100)}%</span>
           </div>
 
           <div className="coord-badge">
             {mriSeq === 'mra' ? '3D-TOF MRA' : `X:${coords.x} Y:${coords.y} Z:${coords.z}`}
           </div>
+
+          <button
+            onClick={toggleLandscapeFullscreen}
+            style={{
+              padding: '4px 8px',
+              fontSize: '11px',
+              fontWeight: 'bold',
+              borderRadius: '4px',
+              border: isFullscreen ? '1px solid #00e5ff' : '1px solid #444',
+              backgroundColor: isFullscreen ? '#004d40' : '#222',
+              color: isFullscreen ? '#00e5ff' : '#ddd',
+              cursor: 'pointer',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {isFullscreen ? '全画面解除' : '横全画面'}
+          </button>
         </div>
       </header>
 
@@ -981,7 +1206,7 @@ export default function App() {
       {mriSeq !== 'mra' && (
         <div className="mobile-view-tabs">
           {[
-            { id: 'axial' as const, label: '水平断' },
+            { id: 'axial' as const, label: '軸位断' },
             { id: 'coronal' as const, label: '冠状断' },
             { id: 'sagittal' as const, label: '矢状断' },
             { id: 'ic_zoom' as const, label: '内包拡大' },
@@ -1002,10 +1227,31 @@ export default function App() {
       <div className="mobile-touch-readout">
         {activeStructureDisplay ? (
           <>
-            <span style={{ fontWeight: 'bold', color: '#ffeb3b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <span
+              style={{
+                fontWeight: 'bold',
+                color: '#ffeb3b',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
               {activeStructureDisplay.info.name}
             </span>
-            <span style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '3px', backgroundColor: getCategoryInfo(activeStructureDisplay.id, activeStructureDisplay.info.name).bg, color: activeStructureDisplay.id >= 1000 ? '#000' : '#fff', flexShrink: 0, marginLeft: '8px' }}>
+            <span
+              style={{
+                fontSize: '10px',
+                padding: '2px 6px',
+                borderRadius: '3px',
+                backgroundColor: getCategoryInfo(
+                  activeStructureDisplay.id,
+                  activeStructureDisplay.info.name
+                ).bg,
+                color: activeStructureDisplay.id >= 1000 ? '#000' : '#fff',
+                flexShrink: 0,
+                marginLeft: '8px',
+              }}
+            >
               {activeStructureDisplay.info.abbr}
             </span>
           </>
@@ -1016,15 +1262,34 @@ export default function App() {
 
       {/* メイン領域 */}
       <div className="atlas-main">
-        {/* 第1ペイン: メイン水平断 または 3DインタラクティブMRA */}
+        {/* 第1ペイン: メイン軸位断 または 3DインタラクティブMRA */}
         <div className={`pane-primary ${mriSeq !== 'mra' && mobileTab !== 'axial' ? 'mobile-hidden' : ''}`}>
-          <div className="desktop-only-header" style={{ width: '100%', maxWidth: '880px', marginBottom: '6px', fontSize: '13px', fontWeight: 'bold', color: '#00e5ff' }}>
+          <div
+            className="desktop-only-header"
+            style={{
+              width: '100%',
+              maxWidth: '880px',
+              marginBottom: '6px',
+              fontSize: '13px',
+              fontWeight: 'bold',
+              color: '#00e5ff',
+            }}
+          >
             {mriSeq === 'mra' ? (
               <span>3D-TOF MRA インタラクティブ3D血管モデル（ドラッグで回転・クリックで解説）</span>
             ) : (
               <>
-                水平断 (Axial: Z = {coords.z}) {tiltAngle !== 0 && <span style={{ color: '#ffeb3b', fontSize: '12px', marginLeft: '6px' }}>[{activePreset} 傾斜: {tiltAngle}°]</span>}
-                <span style={{ fontSize: '11px', color: '#777', fontWeight: 'normal', marginLeft: '10px' }}>ホイールでZ移動 / 左: 生MRI ↔ 右: アトラス</span>
+                軸位断 (Axial: Z = {coords.z}){' '}
+                {tiltAngle !== 0 && (
+                  <span style={{ color: '#ffeb3b', fontSize: '12px', marginLeft: '6px' }}>
+                    [{activePreset} 傾斜: {tiltAngle}°]
+                  </span>
+                )}
+                <span
+                  style={{ fontSize: '11px', color: '#777', fontWeight: 'normal', marginLeft: '10px' }}
+                >
+                  ホイールでZ移動 / 左: 生MRI ↔ 右: アトラス
+                </span>
               </>
             )}
           </div>
@@ -1042,7 +1307,12 @@ export default function App() {
               }}
               onHover={(hit) => {
                 if (hit && structures[String(hit.id)]) {
-                  setHoveredStructure({ id: hit.id, info: structures[String(hit.id)], x: hit.x, y: hit.y });
+                  setHoveredStructure({
+                    id: hit.id,
+                    info: structures[String(hit.id)],
+                    x: hit.x,
+                    y: hit.y,
+                  });
                 } else {
                   setHoveredStructure(null);
                 }
@@ -1077,7 +1347,10 @@ export default function App() {
               ].map((tab) => (
                 <button
                   key={tab.mode}
-                  onClick={() => { setSubViewMode(tab.mode); resetZoom(); }}
+                  onClick={() => {
+                    setSubViewMode(tab.mode);
+                    resetZoom();
+                  }}
                   className={`submode-btn ${subViewMode === tab.mode ? 'active' : ''}`}
                 >
                   {tab.label}
@@ -1088,8 +1361,14 @@ export default function App() {
 
           {activeZoomMode === 'ortho' || mriSeq === 'mra' ? (
             <>
-              <div className={mobileTab !== 'coronal' ? 'mobile-hidden' : ''} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%' }}>
-                <div className="desktop-only-header" style={{ fontSize: '12px', color: '#4caf50', marginBottom: '4px', width: '100%', maxWidth: '460px' }}>
+              <div
+                className={mobileTab !== 'coronal' ? 'mobile-hidden' : ''}
+                style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%' }}
+              >
+                <div
+                  className="desktop-only-header"
+                  style={{ fontSize: '12px', color: '#4caf50', marginBottom: '4px', width: '100%', maxWidth: '460px' }}
+                >
                   {mriSeq === 'mra' ? '3D-TOF MRA 正面投影 (AP MIP)' : `冠状断 (Coronal: Y = ${coords.y})`}
                 </div>
                 <div className="canvas-box-sub">
@@ -1105,8 +1384,20 @@ export default function App() {
                 </div>
               </div>
 
-              <div className={mobileTab !== 'sagittal' ? 'mobile-hidden' : ''} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%', marginTop: '4px' }}>
-                <div className="desktop-only-header" style={{ fontSize: '12px', color: '#ff9800', marginBottom: '4px', width: '100%', maxWidth: '460px' }}>
+              <div
+                className={mobileTab !== 'sagittal' ? 'mobile-hidden' : ''}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  width: '100%',
+                  marginTop: '4px',
+                }}
+              >
+                <div
+                  className="desktop-only-header"
+                  style={{ fontSize: '12px', color: '#ff9800', marginBottom: '4px', width: '100%', maxWidth: '460px' }}
+                >
                   {mriSeq === 'mra' ? '3D-TOF MRA 側面投影 (Lateral MIP)' : `矢状断 (Sagittal: X = ${coords.x})`}
                 </div>
                 <div className="canvas-box-sub">
@@ -1124,7 +1415,10 @@ export default function App() {
             </>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%', gap: '8px' }}>
-              <div className="desktop-only-header" style={{ width: '100%', maxWidth: '520px', fontSize: '13px', fontWeight: 'bold', color: '#00e5ff' }}>
+              <div
+                className="desktop-only-header"
+                style={{ width: '100%', maxWidth: '520px', fontSize: '13px', fontWeight: 'bold', color: '#00e5ff' }}
+              >
                 {activeZoomMode === 'ic_zoom'
                   ? `内包 詳細伝導路・体部位局在 (Z = ${coords.z} / 傾斜: ${tiltAngle}°)`
                   : `脳幹 微細神経核・伝導路 (Z = ${coords.z} / 傾斜: ${tiltAngle}°)`}
@@ -1133,21 +1427,24 @@ export default function App() {
               {activeZoomMode === 'stem_zoom' && (
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', width: '100%', maxWidth: '520px', gap: '5px' }}>
                   {[
-                    { label: '中脳上丘(44)', z: 44 },
-                    { label: '中脳下丘(40)', z: 40 },
-                    { label: '橋中部(34)', z: 34 },
-                    { label: '橋下部(29)', z: 29 },
-                    { label: '延髄上部(21)', z: 21 },
-                    { label: '延髄下部(15)', z: 15 },
+                    { label: '中脳上丘(66)', z: 66 },
+                    { label: '中脳下丘(60)', z: 60 },
+                    { label: '橋中部(51)', z: 51 },
+                    { label: '橋下部(44)', z: 44 },
+                    { label: '延髄上部(32)', z: 32 },
+                    { label: '延髄下部(23)', z: 23 },
                   ].map((b) => (
                     <button
                       key={b.z}
                       onClick={() => setCoords((prev) => ({ ...prev, z: b.z }))}
                       style={{
-                        padding: '5px 2px', fontSize: '10px', borderRadius: '4px',
+                        padding: '5px 2px',
+                        fontSize: '10px',
+                        borderRadius: '4px',
                         border: coords.z === b.z ? '1px solid #00e5ff' : '1px solid #333',
                         backgroundColor: coords.z === b.z ? '#004d40' : '#1a1a1a',
-                        color: '#fff', cursor: 'pointer'
+                        color: '#fff',
+                        cursor: 'pointer',
                       }}
                     >
                       {b.label}
@@ -1180,23 +1477,56 @@ export default function App() {
             {mobileTab === 'coronal' ? (
               <div className="stepper-row">
                 <span style={{ fontSize: '11px', color: '#4caf50', width: '48px' }}>Y: {coords.y}</span>
-                <button className="step-btn" onClick={() => stepCoord('y', -1)}>−</button>
-                <input type="range" min="0" max={DIMS.y - 1} value={coords.y} onChange={(e) => setCoords((prev) => ({ ...prev, y: parseInt(e.target.value, 10) }))} style={{ flex: 1 }} />
-                <button className="step-btn" onClick={() => stepCoord('y', 1)}>＋</button>
+                <button className="step-btn" onClick={() => stepCoord('y', -1)}>
+                  −
+                </button>
+                <input
+                  type="range"
+                  min="0"
+                  max={DIMS.y - 1}
+                  value={coords.y}
+                  onChange={(e) => setCoords((prev) => ({ ...prev, y: parseInt(e.target.value, 10) }))}
+                  style={{ flex: 1 }}
+                />
+                <button className="step-btn" onClick={() => stepCoord('y', 1)}>
+                  ＋
+                </button>
               </div>
             ) : mobileTab === 'sagittal' ? (
               <div className="stepper-row">
                 <span style={{ fontSize: '11px', color: '#ff9800', width: '48px' }}>X: {coords.x}</span>
-                <button className="step-btn" onClick={() => stepCoord('x', -1)}>−</button>
-                <input type="range" min="0" max={DIMS.x - 1} value={coords.x} onChange={(e) => setCoords((prev) => ({ ...prev, x: parseInt(e.target.value, 10) }))} style={{ flex: 1 }} />
-                <button className="step-btn" onClick={() => stepCoord('x', 1)}>＋</button>
+                <button className="step-btn" onClick={() => stepCoord('x', -1)}>
+                  −
+                </button>
+                <input
+                  type="range"
+                  min="0"
+                  max={DIMS.x - 1}
+                  value={coords.x}
+                  onChange={(e) => setCoords((prev) => ({ ...prev, x: parseInt(e.target.value, 10) }))}
+                  style={{ flex: 1 }}
+                />
+                <button className="step-btn" onClick={() => stepCoord('x', 1)}>
+                  ＋
+                </button>
               </div>
             ) : (
               <div className="stepper-row">
                 <span style={{ fontSize: '11px', color: '#00e5ff', width: '48px' }}>Z: {coords.z}</span>
-                <button className="step-btn" onClick={() => stepCoord('z', -1)}>−</button>
-                <input type="range" min="0" max={DIMS.z - 1} value={coords.z} onChange={(e) => setCoords((prev) => ({ ...prev, z: parseInt(e.target.value, 10) }))} style={{ flex: 1 }} />
-                <button className="step-btn" onClick={() => stepCoord('z', 1)}>＋</button>
+                <button className="step-btn" onClick={() => stepCoord('z', -1)}>
+                  −
+                </button>
+                <input
+                  type="range"
+                  min="0"
+                  max={DIMS.z - 1}
+                  value={coords.z}
+                  onChange={(e) => setCoords((prev) => ({ ...prev, z: parseInt(e.target.value, 10) }))}
+                  style={{ flex: 1 }}
+                />
+                <button className="step-btn" onClick={() => stepCoord('z', 1)}>
+                  ＋
+                </button>
               </div>
             )}
           </div>
@@ -1207,8 +1537,22 @@ export default function App() {
           {mriSeq !== 'mra' ? (
             <div className="control-card">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontSize: '12px', fontWeight: 'bold', color: '#00e5ff' }}>断面・基準線コントロール</span>
-                <button onClick={handleReset} style={{ padding: '4px 10px', fontSize: '11px', borderRadius: '4px', border: '1px solid #d32f2f', backgroundColor: '#b71c1c', color: '#fff', cursor: 'pointer', fontWeight: 'bold' }}>
+                <span style={{ fontSize: '12px', fontWeight: 'bold', color: '#00e5ff' }}>
+                  断面・基準線コントロール
+                </span>
+                <button
+                  onClick={handleReset}
+                  style={{
+                    padding: '4px 10px',
+                    fontSize: '11px',
+                    borderRadius: '4px',
+                    border: '1px solid #d32f2f',
+                    backgroundColor: '#b71c1c',
+                    color: '#fff',
+                    cursor: 'pointer',
+                    fontWeight: 'bold',
+                  }}
+                >
                   リセット
                 </button>
               </div>
@@ -1219,10 +1563,14 @@ export default function App() {
                     key={p}
                     onClick={() => applyPreset(p)}
                     style={{
-                      padding: '6px 2px', fontSize: '11px', fontWeight: activePreset === p ? 'bold' : 'normal',
-                      borderRadius: '4px', border: '1px solid #444',
+                      padding: '6px 2px',
+                      fontSize: '11px',
+                      fontWeight: activePreset === p ? 'bold' : 'normal',
+                      borderRadius: '4px',
+                      border: '1px solid #444',
                       backgroundColor: activePreset === p ? '#0288d1' : '#222',
-                      color: activePreset === p ? '#fff' : '#ccc', cursor: 'pointer'
+                      color: activePreset === p ? '#fff' : '#ccc',
+                      cursor: 'pointer',
                     }}
                   >
                     {p}
@@ -1235,7 +1583,17 @@ export default function App() {
                   <span style={{ color: '#ffeb3b' }}>傾斜角 (Tilt):</span>
                   <span style={{ color: '#ffeb3b', fontWeight: 'bold' }}>{tiltAngle}°</span>
                 </div>
-                <input type="range" min="-30" max="30" value={tiltAngle} onChange={(e) => { setTiltAngle(parseInt(e.target.value, 10)); setActivePreset('Custom'); }} style={{ width: '100%', cursor: 'pointer' }} />
+                <input
+                  type="range"
+                  min="-30"
+                  max="30"
+                  value={tiltAngle}
+                  onChange={(e) => {
+                    setTiltAngle(parseInt(e.target.value, 10));
+                    setActivePreset('Custom');
+                  }}
+                  style={{ width: '100%', cursor: 'pointer' }}
+                />
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
@@ -1244,9 +1602,20 @@ export default function App() {
                   <span style={{ color: '#fff', fontWeight: 'bold' }}>{coords.z}</span>
                 </div>
                 <div className="stepper-row">
-                  <button className="step-btn" onClick={() => stepCoord('z', -1)}>−</button>
-                  <input type="range" min="0" max={DIMS.z - 1} value={coords.z} onChange={(e) => setCoords((prev) => ({ ...prev, z: parseInt(e.target.value, 10) }))} style={{ flex: 1, cursor: 'pointer' }} />
-                  <button className="step-btn" onClick={() => stepCoord('z', 1)}>＋</button>
+                  <button className="step-btn" onClick={() => stepCoord('z', -1)}>
+                    −
+                  </button>
+                  <input
+                    type="range"
+                    min="0"
+                    max={DIMS.z - 1}
+                    value={coords.z}
+                    onChange={(e) => setCoords((prev) => ({ ...prev, z: parseInt(e.target.value, 10) }))}
+                    style={{ flex: 1, cursor: 'pointer' }}
+                  />
+                  <button className="step-btn" onClick={() => stepCoord('z', 1)}>
+                    ＋
+                  </button>
                 </div>
               </div>
 
@@ -1256,9 +1625,20 @@ export default function App() {
                   <span style={{ color: '#fff', fontWeight: 'bold' }}>{coords.y}</span>
                 </div>
                 <div className="stepper-row">
-                  <button className="step-btn" onClick={() => stepCoord('y', -1)}>−</button>
-                  <input type="range" min="0" max={DIMS.y - 1} value={coords.y} onChange={(e) => setCoords((prev) => ({ ...prev, y: parseInt(e.target.value, 10) }))} style={{ flex: 1, cursor: 'pointer' }} />
-                  <button className="step-btn" onClick={() => stepCoord('y', 1)}>＋</button>
+                  <button className="step-btn" onClick={() => stepCoord('y', -1)}>
+                    −
+                  </button>
+                  <input
+                    type="range"
+                    min="0"
+                    max={DIMS.y - 1}
+                    value={coords.y}
+                    onChange={(e) => setCoords((prev) => ({ ...prev, y: parseInt(e.target.value, 10) }))}
+                    style={{ flex: 1, cursor: 'pointer' }}
+                  />
+                  <button className="step-btn" onClick={() => stepCoord('y', 1)}>
+                    ＋
+                  </button>
                 </div>
               </div>
 
@@ -1268,15 +1648,28 @@ export default function App() {
                   <span style={{ color: '#fff', fontWeight: 'bold' }}>{coords.x}</span>
                 </div>
                 <div className="stepper-row">
-                  <button className="step-btn" onClick={() => stepCoord('x', -1)}>−</button>
-                  <input type="range" min="0" max={DIMS.x - 1} value={coords.x} onChange={(e) => setCoords((prev) => ({ ...prev, x: parseInt(e.target.value, 10) }))} style={{ flex: 1, cursor: 'pointer' }} />
-                  <button className="step-btn" onClick={() => stepCoord('x', 1)}>＋</button>
+                  <button className="step-btn" onClick={() => stepCoord('x', -1)}>
+                    −
+                  </button>
+                  <input
+                    type="range"
+                    min="0"
+                    max={DIMS.x - 1}
+                    value={coords.x}
+                    onChange={(e) => setCoords((prev) => ({ ...prev, x: parseInt(e.target.value, 10) }))}
+                    style={{ flex: 1, cursor: 'pointer' }}
+                  />
+                  <button className="step-btn" onClick={() => stepCoord('x', 1)}>
+                    ＋
+                  </button>
                 </div>
               </div>
             </div>
           ) : (
             <div className="control-card">
-              <div style={{ fontSize: '12px', fontWeight: 'bold', color: '#00e5ff' }}>主要脳動脈 14系統カラー凡例</div>
+              <div style={{ fontSize: '12px', fontWeight: 'bold', color: '#00e5ff' }}>
+                主要脳動脈 14系統カラー凡例
+              </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 {[901, 902, 903, 904, 905, 906, 907, 908, 909, 910, 911, 912, 913, 914].map((id) => {
                   const info = structures[String(id)];
@@ -1286,12 +1679,24 @@ export default function App() {
                       key={id}
                       onClick={() => setSelectedStructure({ id, info })}
                       style={{
-                        display: 'flex', alignItems: 'center', gap: '8px', padding: '5px 8px',
-                        borderRadius: '4px', backgroundColor: selectedStructure?.id === id ? '#252525' : '#1a1a1a',
-                        cursor: 'pointer'
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        padding: '5px 8px',
+                        borderRadius: '4px',
+                        backgroundColor: selectedStructure?.id === id ? '#252525' : '#1a1a1a',
+                        cursor: 'pointer',
                       }}
                     >
-                      <span style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: `rgb(${info.color.join(',')})`, flexShrink: 0 }} />
+                      <span
+                        style={{
+                          width: '10px',
+                          height: '10px',
+                          borderRadius: '50%',
+                          backgroundColor: `rgb(${info.color.join(',')})`,
+                          flexShrink: 0,
+                        }}
+                      />
                       <span style={{ fontSize: '11px', color: '#eee' }}>{info.name}</span>
                     </div>
                   );
@@ -1302,29 +1707,72 @@ export default function App() {
 
           {/* 臨床神経解剖インスペクター */}
           <div style={{ borderTop: '1px solid #222', paddingTop: '12px' }}>
-            <h2 style={{ fontSize: '13px', color: '#777', margin: '0 0 10px 0' }}>臨床神経解剖インスペクター</h2>
+            <h2 style={{ fontSize: '13px', color: '#777', margin: '0 0 10px 0' }}>
+              臨床神経解剖インスペクター
+            </h2>
             {selectedStructure ? (
               <div>
-                <div style={{ display: 'inline-block', fontSize: '11px', padding: '3px 8px', borderRadius: '4px', backgroundColor: getCategoryInfo(selectedStructure.id, selectedStructure.info.name).bg, color: selectedStructure.id >= 1000 ? '#000' : '#fff', fontWeight: 'bold', marginBottom: '8px' }}>
+                <div
+                  style={{
+                    display: 'inline-block',
+                    fontSize: '11px',
+                    padding: '3px 8px',
+                    borderRadius: '4px',
+                    backgroundColor: getCategoryInfo(
+                      selectedStructure.id,
+                      selectedStructure.info.name
+                    ).bg,
+                    color: selectedStructure.id >= 1000 ? '#000' : '#fff',
+                    fontWeight: 'bold',
+                    marginBottom: '8px',
+                  }}
+                >
                   {getCategoryInfo(selectedStructure.id, selectedStructure.info.name).label}
                 </div>
-                <h3 style={{ fontSize: '16px', margin: '4px 0 8px 0', color: '#fff' }}>{selectedStructure.info.name}</h3>
+                <h3 style={{ fontSize: '16px', margin: '4px 0 8px 0', color: '#fff' }}>
+                  {selectedStructure.info.name}
+                </h3>
                 <div style={{ fontSize: '11px', color: '#888', marginBottom: '12px' }}>
-                  略称: <strong style={{ color: '#ccc' }}>{selectedStructure.info.abbr}</strong> | ID: {selectedStructure.id}
+                  略称: <strong style={{ color: '#ccc' }}>{selectedStructure.info.abbr}</strong> | ID:{' '}
+                  {selectedStructure.id}
                 </div>
                 <div style={{ borderTop: '1px solid #222', paddingTop: '10px', marginBottom: '10px' }}>
-                  <div style={{ fontSize: '11px', fontWeight: 'bold', color: '#00bcd4', marginBottom: '4px' }}>【機能解剖・生理機能】</div>
-                  <div style={{ fontSize: '12px', lineHeight: '1.6', color: '#ddd' }}>{selectedStructure.info.function}</div>
+                  <div style={{ fontSize: '11px', fontWeight: 'bold', color: '#00bcd4', marginBottom: '4px' }}>
+                    【機能解剖・生理機能】
+                  </div>
+                  <div style={{ fontSize: '12px', lineHeight: '1.6', color: '#ddd' }}>
+                    {selectedStructure.info.function}
+                  </div>
                 </div>
                 <div style={{ borderTop: '1px solid #222', paddingTop: '10px' }}>
-                  <div style={{ fontSize: '11px', fontWeight: 'bold', color: '#ff7043', marginBottom: '4px' }}>【臨床症状・リハビリテーション評価】</div>
-                  <div style={{ fontSize: '12px', lineHeight: '1.6', color: '#eee', backgroundColor: '#161616', padding: '10px', borderRadius: '6px', borderLeft: '3px solid #ff7043' }}>
+                  <div style={{ fontSize: '11px', fontWeight: 'bold', color: '#ff7043', marginBottom: '4px' }}>
+                    【臨床症状・リハビリテーション評価】
+                  </div>
+                  <div
+                    style={{
+                      fontSize: '12px',
+                      lineHeight: '1.6',
+                      color: '#eee',
+                      backgroundColor: '#161616',
+                      padding: '10px',
+                      borderRadius: '6px',
+                      borderLeft: '3px solid #ff7043',
+                    }}
+                  >
                     {selectedStructure.info.clinical}
                   </div>
                 </div>
               </div>
             ) : (
-              <div style={{ color: '#555', fontSize: '12px', lineHeight: '1.6', textAlign: 'center', padding: '16px 0' }}>
+              <div
+                style={{
+                  color: '#555',
+                  fontSize: '12px',
+                  lineHeight: '1.6',
+                  textAlign: 'center',
+                  padding: '16px 0',
+                }}
+              >
                 領域・拡大経路・脳溝ラインをタップ（クリック）すると、臨床機能・責任病巣解説が表示されます。
               </div>
             )}
@@ -1337,14 +1785,33 @@ export default function App() {
         <div
           className="desktop-tooltip"
           style={{
-            position: 'fixed', left: hoveredStructure.x + 15, top: hoveredStructure.y - 35,
-            backgroundColor: 'rgba(20, 20, 20, 0.95)', border: '1px solid #444',
-            padding: '8px 12px', borderRadius: '6px', pointerEvents: 'none', zIndex: 150,
-            boxShadow: '0 4px 12px rgba(0,0,0,0.5)', maxWidth: '330px'
+            position: 'fixed',
+            left: hoveredStructure.x + 15,
+            top: hoveredStructure.y - 35,
+            backgroundColor: 'rgba(20, 20, 20, 0.95)',
+            border: '1px solid #444',
+            padding: '8px 12px',
+            borderRadius: '6px',
+            pointerEvents: 'none',
+            zIndex: 150,
+            boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+            maxWidth: '330px',
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
-            <span style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '3px', backgroundColor: getCategoryInfo(hoveredStructure.id, hoveredStructure.info.name).bg, color: hoveredStructure.id >= 1000 ? '#000' : '#fff', fontWeight: 'bold' }}>
+            <span
+              style={{
+                fontSize: '10px',
+                padding: '2px 6px',
+                borderRadius: '3px',
+                backgroundColor: getCategoryInfo(
+                  hoveredStructure.id,
+                  hoveredStructure.info.name
+                ).bg,
+                color: hoveredStructure.id >= 1000 ? '#000' : '#fff',
+                fontWeight: 'bold',
+              }}
+            >
               {getCategoryInfo(hoveredStructure.id, hoveredStructure.info.name).label}
             </span>
             <span style={{ fontSize: '10px', color: '#888' }}>ID: {hoveredStructure.id}</span>
