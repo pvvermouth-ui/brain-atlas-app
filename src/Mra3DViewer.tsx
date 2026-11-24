@@ -169,8 +169,9 @@ export default function Mra3DViewer({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const W = 640;
-    const H = 640;
+    const W = 960;
+    const H = 960;
+    const resScale = W / 640; // 1.5倍スケーリング
     if (canvas.width !== W || canvas.height !== H) {
       canvas.width = W;
       canvas.height = H;
@@ -186,7 +187,7 @@ export default function Mra3DViewer({
 
     const fov = 310;
     const camDist = 175;
-    const baseScale = (3.1 * zoom) / 2.2;
+    const baseScale = (3.1 * zoom * resScale) / 2.2;
 
     const project = (px: number, py: number, pz: number) => {
       const rx = mat[0] * px + mat[1] * py + mat[2] * pz;
@@ -211,7 +212,7 @@ export default function Mra3DViewer({
         const g = ghostPoints[i];
         const p = project(g.x, g.y, g.z);
         if (!p) continue;
-        const r = Math.max(1.2, 1.5 * p.persp * zoom);
+        const r = Math.max(1.5, 1.5 * p.persp * zoom * resScale);
         ctx.fillRect(p.sx - r * 0.5, p.sy - r * 0.5, r, r);
       }
     }
@@ -223,7 +224,7 @@ export default function Mra3DViewer({
       const p = project(v.x, v.y, v.z);
       if (!p) continue;
       const isSelected = selectedId === v.id;
-      const r = (isSelected ? 3.2 : 2.3) * p.persp * (zoom * 0.72);
+      const r = (isSelected ? 3.2 : 2.3) * p.persp * (zoom * 0.72) * resScale;
       projList.push({ sx: p.sx, sy: p.sy, rz: p.rz, radius: Math.max(1.5, r), id: v.id });
     }
 

@@ -3,6 +3,8 @@ import './App.css';
 import Mra3DViewer from './Mra3DViewer';
 
 const DIMS = { x: 128, y: 128, z: 128 };
+const SLICE_RES = 384; // 通常3断面の描画解像度（重ければ 256、さらに上げるなら 512）
+const ZOOM_RES = 640;  // 内包・脳幹拡大ビューの描画解像度（元は480）
 const DEFAULT_COORDS = { x: 64, y: 64, z: 54 };
 const DEFAULT_TILT = 0;
 
@@ -69,7 +71,6 @@ function getDetailedInternalCapsuleId(baseId: number, vx: number, vy: number): n
 
 export default function App() {
   const axialCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const coronalCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const sagittalCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const zoomCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -318,8 +319,8 @@ export default function App() {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const W = 480;
-    const H = 480;
+    const W = ZOOM_RES;
+    const H = ZOOM_RES;
     canvas.width = W;
     canvas.height = H;
     const imgData = ctx.createImageData(W, H);
@@ -381,29 +382,6 @@ export default function App() {
     }
     ctx.putImageData(imgData, 0, 0);
   }, [rawMriData, labelData, stemMicroData, activeZoomMode, coords.y, coords.z, tiltAngle, overlayAlpha, structures, sampleMriTrilinear]);
-
-  const drawScaledSlice = (
-    canvas: HTMLCanvasElement,
-    ctx: CanvasRenderingContext2D,
-    imgData: ImageData,
-    scale = 4
-  ) => {
-    if (!offscreenCanvasRef.current) {
-      offscreenCanvasRef.current = document.createElement('canvas');
-    }
-    const off = offscreenCanvasRef.current;
-    if (off.width !== imgData.width || off.height !== imgData.height) {
-      off.width = imgData.width;
-      off.height = imgData.height;
-    }
-    const offCtx = off.getContext('2d');
-    if (offCtx) offCtx.putImageData(imgData, 0, 0);
-
-    canvas.width = imgData.width * scale;
-    canvas.height = imgData.height * scale;
-    ctx.imageSmoothingEnabled = true;
-    ctx.drawImage(off, 0, 0, canvas.width, canvas.height);
-  };
 
   const renderViews = useCallback(() => {
     if (!rawMriData || !labelData) return;
@@ -501,172 +479,188 @@ export default function App() {
     const sinTilt = Math.sin(tiltRad);
     const tanTilt = Math.tan(tiltRad);
 
-    // 1. Axial
-  if (axialCanvasRef.current) {
-    const canvas = axialCanvasRef.current;
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      const SCALE = 4;
-      const imgData = ctx.createImageData(DIMS.x, DIMS.y);
-      const d = imgData.data;
-      const pivotPy = DIMS.y - 1 - coords.y;
+  // 1. Axial（高解像度・Trilinear補間）
+ if (axialCanvasRef.current) {
+   const canvas = axialCanvasRef.current;
+   const ctx = canvas.getContext('2d');
+   if (ctx) {
+     const W = SLICE_RES;
+     const H = SLICE_RES;
+     if (canvas.width !== W || canvas.height !== H) {
+       canvas.width = W;
+       canvas.height = H;
+     }
+     const imgData = ctx.createImageData(W, H);
+     const d = imgData.data;
 
-      for (let py = 0; py < DIMS.y; py++) {
-        const distFromPivot = pivotPy - py;
-        const vy = coords.y + distFromPivot * cosTilt;
-        const vz = coords.z + distFromPivot * sinTilt;
+     for (let py = 0; py < H; py++) {
+       const planeY = (DIMS.y - 1) - ((py + 0.5) / H) * DIMS.y;
+       const distFromPivot = planeY - coords.y;
+       const vy = coords.y + distFromPivot * cosTilt;
+       const vz = coords.z + distFromPivot * sinTilt;
 
-        for (let px = 0; px < DIMS.x; px++) {
-          const vx = px;
-          const pIdx = (py * DIMS.x + px) * 4;
-          if (vy < 0 || vy >= DIMS.y || vz < 0 || vz >= DIMS.z) {
-            d[pIdx] = d[pIdx + 1] = d[pIdx + 2] = 0; d[pIdx + 3] = 255;
-            continue;
-          }
-          const z0 = Math.floor(vz);
-          const z1 = Math.min(DIMS.z - 1, z0 + 1);
-          const fz = vz - z0;
-          const idx0 = getVoxelIdx(vx, vy, z0);
-          const idx1 = getVoxelIdx(vx, vy, z1);
+       for (let px = 0; px < W; px++) {
+         const fx = ((px + 0.5) / W) * DIMS.x;
+         const pIdx = (py * W + px) * 4;
+         if (vy < 0 || vy >= DIMS.y || vz < 0 || vz >= DIMS.z) {
+           d[pIdx] = d[pIdx + 1] = d[pIdx + 2] = 0; d[pIdx + 3] = 255;
+           continue;
+         }
+         const mriVal = Math.round(sampleMriTrilinear(fx, vy, vz));
+         const vIdx = getVoxelIdx(fx, vy, vz);
+         const lId = labelData[vIdx] || 0;
+         const sId = sulciData ? (sulciData[vIdx] || 0) : 0;
 
-          const mriVal = Math.round((rawMriData[idx0] || 0) * (1 - fz) + (rawMriData[idx1] || 0) * fz);
-          const lId = fz < 0.5 ? (labelData[idx0] || 0) : (labelData[idx1] || 0);
-          const sId = sulciData ? (fz < 0.5 ? (sulciData[idx0] || 0) : (sulciData[idx1] || 0)) : 0;
+         if (fx >= 64 && visibleLayers.sulci && sId > 0 && structures[String(sId)]) {
+           const [sr, sg, sb] = structures[String(sId)].color;
+           d[pIdx] = sr; d[pIdx + 1] = sg; d[pIdx + 2] = sb; d[pIdx + 3] = 255;
+         } else if (fx >= 64 && lId > 0 && isLayerVisible(lId) && structures[String(lId)]) {
+           const [cr, cg, cb] = structures[String(lId)].color;
+           const a = overlayAlpha;
+           d[pIdx] = Math.round(mriVal * (1 - a) + cr * a);
+           d[pIdx + 1] = Math.round(mriVal * (1 - a) + cg * a);
+           d[pIdx + 2] = Math.round(mriVal * (1 - a) + cb * a);
+           d[pIdx + 3] = 255;
+         } else {
+           d[pIdx] = d[pIdx + 1] = d[pIdx + 2] = mriVal;
+           d[pIdx + 3] = 255;
+         }
+       }
+     }
+     ctx.putImageData(imgData, 0, 0);
 
-          if (vx >= 64 && visibleLayers.sulci && sId > 0 && structures[String(sId)]) {
-            const [sr, sg, sb] = structures[String(sId)].color;
-            d[pIdx] = sr; d[pIdx + 1] = sg; d[pIdx + 2] = sb; d[pIdx + 3] = 255;
-          } else if (vx >= 64 && lId > 0 && isLayerVisible(lId) && structures[String(lId)]) {
-            const [cr, cg, cb] = structures[String(lId)].color;
-            const a = overlayAlpha;
-            d[pIdx] = Math.round(mriVal * (1 - a) + cr * a);
-            d[pIdx + 1] = Math.round(mriVal * (1 - a) + cg * a);
-            d[pIdx + 2] = Math.round(mriVal * (1 - a) + cb * a);
-            d[pIdx + 3] = 255;
-          } else {
-            d[pIdx] = d[pIdx + 1] = d[pIdx + 2] = mriVal;
-            d[pIdx + 3] = 255;
-          }
-        }
-      }
-      drawScaledSlice(canvas, ctx, imgData, SCALE);
+     const cx = ((coords.x + 0.5) / DIMS.x) * W;
+     const cy = ((DIMS.y - 1 - coords.y + 0.5) / DIMS.y) * H;
+     ctx.setLineDash([]);
+     ctx.lineWidth = 0.8;
+     ctx.strokeStyle = 'rgba(255, 152, 0, 0.95)';
+     ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, H); ctx.stroke();
+     ctx.strokeStyle = 'rgba(76, 175, 80, 0.95)';
+     ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(W, cy); ctx.stroke();
+   }
+ }
 
-      ctx.setLineDash([]);
-      ctx.lineWidth = 0.8;
-      ctx.strokeStyle = 'rgba(255, 152, 0, 0.95)';
-      ctx.beginPath(); ctx.moveTo((coords.x + 0.5) * SCALE, 0); ctx.lineTo((coords.x + 0.5) * SCALE, canvas.height); ctx.stroke();
-      ctx.strokeStyle = 'rgba(76, 175, 80, 0.95)';
-      ctx.beginPath(); ctx.moveTo(0, (pivotPy + 0.5) * SCALE); ctx.lineTo(canvas.width, (pivotPy + 0.5) * SCALE); ctx.stroke();
-    }
-  }
+ if (activeZoomMode !== 'ortho') {
+   renderZoomView();
+ }
 
-    if (activeZoomMode !== 'ortho') {
-      renderZoomView();
-    }
+ // 2. Coronal（高解像度・Trilinear補間）
+ if (coronalCanvasRef.current) {
+   const canvas = coronalCanvasRef.current;
+   const ctx = canvas.getContext('2d');
+   if (ctx) {
+     const W = SLICE_RES;
+     const H = SLICE_RES;
+     if (canvas.width !== W || canvas.height !== H) {
+       canvas.width = W;
+       canvas.height = H;
+     }
+     const imgData = ctx.createImageData(W, H);
+     const d = imgData.data;
 
-    // 2. Coronal
-  if (coronalCanvasRef.current) {
-    const canvas = coronalCanvasRef.current;
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      const SCALE = 4;
-      const imgData = ctx.createImageData(DIMS.x, DIMS.z);
-      const d = imgData.data;
-      for (let pz = 0; pz < DIMS.z; pz++) {
-        const vz = DIMS.z - 1 - pz;
-        for (let px = 0; px < DIMS.x; px++) {
-          const vx = px;
-          const vIdx = getVoxelIdx(vx, coords.y, vz);
-          const pIdx = (pz * DIMS.x + px) * 4;
-          const mriVal = rawMriData[vIdx] || 0;
-          const lId = labelData[vIdx] || 0;
-          const sId = sulciData ? (sulciData[vIdx] || 0) : 0;
+     for (let pz = 0; pz < H; pz++) {
+       const fz = (DIMS.z - 1) - ((pz + 0.5) / H) * DIMS.z;
+       for (let px = 0; px < W; px++) {
+         const fx = ((px + 0.5) / W) * DIMS.x;
+         const pIdx = (pz * W + px) * 4;
+         const mriVal = Math.round(sampleMriTrilinear(fx, coords.y, fz));
+         const vIdx = getVoxelIdx(fx, coords.y, fz);
+         const lId = labelData[vIdx] || 0;
+         const sId = sulciData ? (sulciData[vIdx] || 0) : 0;
 
-          if (vx >= 64 && visibleLayers.sulci && sId > 0 && structures[String(sId)]) {
-            const [sr, sg, sb] = structures[String(sId)].color;
-            d[pIdx] = sr; d[pIdx + 1] = sg; d[pIdx + 2] = sb; d[pIdx + 3] = 255;
-          } else if (vx >= 64 && lId > 0 && isLayerVisible(lId) && structures[String(lId)]) {
-            const [cr, cg, cb] = structures[String(lId)].color;
-            const a = overlayAlpha;
-            d[pIdx] = Math.round(mriVal * (1 - a) + cr * a);
-            d[pIdx + 1] = Math.round(mriVal * (1 - a) + cg * a);
-            d[pIdx + 2] = Math.round(mriVal * (1 - a) + cb * a);
-            d[pIdx + 3] = 255;
-          } else {
-            d[pIdx] = d[pIdx + 1] = d[pIdx + 2] = mriVal;
-            d[pIdx + 3] = 255;
-          }
-        }
-      }
-      drawScaledSlice(canvas, ctx, imgData, SCALE);
+         if (fx >= 64 && visibleLayers.sulci && sId > 0 && structures[String(sId)]) {
+           const [sr, sg, sb] = structures[String(sId)].color;
+           d[pIdx] = sr; d[pIdx + 1] = sg; d[pIdx + 2] = sb; d[pIdx + 3] = 255;
+         } else if (fx >= 64 && lId > 0 && isLayerVisible(lId) && structures[String(lId)]) {
+           const [cr, cg, cb] = structures[String(lId)].color;
+           const a = overlayAlpha;
+           d[pIdx] = Math.round(mriVal * (1 - a) + cr * a);
+           d[pIdx + 1] = Math.round(mriVal * (1 - a) + cg * a);
+           d[pIdx + 2] = Math.round(mriVal * (1 - a) + cb * a);
+           d[pIdx + 3] = 255;
+         } else {
+           d[pIdx] = d[pIdx + 1] = d[pIdx + 2] = mriVal;
+           d[pIdx + 3] = 255;
+         }
+       }
+     }
+     ctx.putImageData(imgData, 0, 0);
 
-      ctx.setLineDash([]);
-      ctx.lineWidth = 0.8;
-      ctx.strokeStyle = 'rgba(255, 152, 0, 0.95)';
-      ctx.beginPath(); ctx.moveTo((coords.x + 0.5) * SCALE, 0); ctx.lineTo((coords.x + 0.5) * SCALE, canvas.height); ctx.stroke();
-      ctx.strokeStyle = 'rgba(41, 182, 246, 0.95)';
-      ctx.beginPath(); ctx.moveTo(0, (DIMS.z - 1 - coords.z + 0.5) * SCALE); ctx.lineTo(canvas.width, (DIMS.z - 1 - coords.z + 0.5) * SCALE); ctx.stroke();
-    }
-  }
+     const cx = ((coords.x + 0.5) / DIMS.x) * W;
+     const cz = ((DIMS.z - 1 - coords.z + 0.5) / DIMS.z) * H;
+     ctx.setLineDash([]);
+     ctx.lineWidth = 0.8;
+     ctx.strokeStyle = 'rgba(255, 152, 0, 0.95)';
+     ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, H); ctx.stroke();
+     ctx.strokeStyle = 'rgba(41, 182, 246, 0.95)';
+     ctx.beginPath(); ctx.moveTo(0, cz); ctx.lineTo(W, cz); ctx.stroke();
+   }
+ }
 
-    // 3. Sagittal
-  if (sagittalCanvasRef.current) {
-    const canvas = sagittalCanvasRef.current;
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      const SCALE = 4;
-      const imgData = ctx.createImageData(DIMS.y, DIMS.z);
-      const d = imgData.data;
-      for (let pz = 0; pz < DIMS.z; pz++) {
-        const vz = DIMS.z - 1 - pz;
-        for (let py = 0; py < DIMS.y; py++) {
-          const vy = DIMS.y - 1 - py;
-          const vIdx = getVoxelIdx(coords.x, vy, vz);
-          const pIdx = (pz * DIMS.y + py) * 4;
-          const mriVal = rawMriData[vIdx] || 0;
-          const lId = labelData[vIdx] || 0;
-          const sId = sulciData ? (sulciData[vIdx] || 0) : 0;
+ // 3. Sagittal（高解像度・Trilinear補間）
+ if (sagittalCanvasRef.current) {
+   const canvas = sagittalCanvasRef.current;
+   const ctx = canvas.getContext('2d');
+   if (ctx) {
+     const W = SLICE_RES;
+     const H = SLICE_RES;
+     if (canvas.width !== W || canvas.height !== H) {
+       canvas.width = W;
+       canvas.height = H;
+     }
+     const imgData = ctx.createImageData(W, H);
+     const d = imgData.data;
 
-          if (coords.x >= 64 && visibleLayers.sulci && sId > 0 && structures[String(sId)]) {
-            const [sr, sg, sb] = structures[String(sId)].color;
-            d[pIdx] = sr; d[pIdx + 1] = sg; d[pIdx + 2] = sb; d[pIdx + 3] = 255;
-          } else if (coords.x >= 64 && lId > 0 && isLayerVisible(lId) && structures[String(lId)]) {
-            const [cr, cg, cb] = structures[String(lId)].color;
-            const a = overlayAlpha;
-            d[pIdx] = Math.round(mriVal * (1 - a) + cr * a);
-            d[pIdx + 1] = Math.round(mriVal * (1 - a) + cg * a);
-            d[pIdx + 2] = Math.round(mriVal * (1 - a) + cb * a);
-            d[pIdx + 3] = 255;
-          } else {
-            d[pIdx] = d[pIdx + 1] = d[pIdx + 2] = mriVal;
-            d[pIdx + 3] = 255;
-          }
-        }
-      }
-      drawScaledSlice(canvas, ctx, imgData, SCALE);
+     for (let pz = 0; pz < H; pz++) {
+       const fz = (DIMS.z - 1) - ((pz + 0.5) / H) * DIMS.z;
+       for (let py = 0; py < W; py++) {
+         const fy = (DIMS.y - 1) - ((py + 0.5) / W) * DIMS.y;
+         const pIdx = (pz * W + py) * 4;
+         const mriVal = Math.round(sampleMriTrilinear(coords.x, fy, fz));
+         const vIdx = getVoxelIdx(coords.x, fy, fz);
+         const lId = labelData[vIdx] || 0;
+         const sId = sulciData ? (sulciData[vIdx] || 0) : 0;
 
-      const cursorScreenPy = DIMS.y - 1 - coords.y;
-      const cursorScreenPz = DIMS.z - 1 - coords.z;
-      ctx.setLineDash([]);
-      ctx.lineWidth = 0.8;
-      ctx.strokeStyle = 'rgba(76, 175, 80, 0.95)';
-      ctx.beginPath(); ctx.moveTo((cursorScreenPy + 0.5) * SCALE, 0); ctx.lineTo((cursorScreenPy + 0.5) * SCALE, canvas.height); ctx.stroke();
-      ctx.strokeStyle = 'rgba(41, 182, 246, 0.95)';
-      ctx.beginPath(); ctx.moveTo(0, (cursorScreenPz + 0.5) * SCALE); ctx.lineTo(canvas.width, (cursorScreenPz + 0.5) * SCALE); ctx.stroke();
+         if (coords.x >= 64 && visibleLayers.sulci && sId > 0 && structures[String(sId)]) {
+           const [sr, sg, sb] = structures[String(sId)].color;
+           d[pIdx] = sr; d[pIdx + 1] = sg; d[pIdx + 2] = sb; d[pIdx + 3] = 255;
+         } else if (coords.x >= 64 && lId > 0 && isLayerVisible(lId) && structures[String(lId)]) {
+           const [cr, cg, cb] = structures[String(lId)].color;
+           const a = overlayAlpha;
+           d[pIdx] = Math.round(mriVal * (1 - a) + cr * a);
+           d[pIdx + 1] = Math.round(mriVal * (1 - a) + cg * a);
+           d[pIdx + 2] = Math.round(mriVal * (1 - a) + cb * a);
+           d[pIdx + 3] = 255;
+         } else {
+           d[pIdx] = d[pIdx + 1] = d[pIdx + 2] = mriVal;
+           d[pIdx + 3] = 255;
+         }
+       }
+     }
+     ctx.putImageData(imgData, 0, 0);
 
-      ctx.strokeStyle = 'rgba(255, 235, 59, 0.95)';
-      ctx.lineWidth = 0.8;
-      ctx.beginPath();
-      for (let py = 0; py < DIMS.y; py++) {
-        const vy = DIMS.y - 1 - py;
-        const lineVz = coords.z + (vy - coords.y) * tanTilt;
-        const linePz = DIMS.z - 1 - lineVz;
-        if (py === 0) ctx.moveTo((py + 0.5) * SCALE, (linePz + 0.5) * SCALE);
-        else ctx.lineTo((py + 0.5) * SCALE, (linePz + 0.5) * SCALE);
-      }
-      ctx.stroke();
-    }
-  }
+     const cy = ((DIMS.y - 1 - coords.y + 0.5) / DIMS.y) * W;
+     const cz = ((DIMS.z - 1 - coords.z + 0.5) / DIMS.z) * H;
+     ctx.setLineDash([]);
+     ctx.lineWidth = 0.8;
+     ctx.strokeStyle = 'rgba(76, 175, 80, 0.95)';
+     ctx.beginPath(); ctx.moveTo(cy, 0); ctx.lineTo(cy, H); ctx.stroke();
+     ctx.strokeStyle = 'rgba(41, 182, 246, 0.95)';
+     ctx.beginPath(); ctx.moveTo(0, cz); ctx.lineTo(W, cz); ctx.stroke();
+
+     ctx.strokeStyle = 'rgba(255, 235, 59, 0.95)';
+     ctx.lineWidth = 1.0;
+     ctx.beginPath();
+     for (let py = 0; py < W; py++) {
+       const vy = (DIMS.y - 1) - ((py + 0.5) / W) * DIMS.y;
+       const lineVz = coords.z + (vy - coords.y) * tanTilt;
+       const linePz = ((DIMS.z - 1 - lineVz + 0.5) / DIMS.z) * H;
+       if (py === 0) ctx.moveTo(py, linePz);
+       else ctx.lineTo(py, linePz);
+     }
+     ctx.stroke();
+   }
+ }
   }, [rawMriData, labelData, sulciData, structures, coords, overlayAlpha, tiltAngle, mriSeq, activeZoomMode, mobileTab, visibleLayers.sulci, isLayerVisible, renderZoomView]);
 
   useEffect(() => {
@@ -713,6 +707,11 @@ export default function App() {
       if (sagittalEl) sagittalEl.removeEventListener('wheel', handleSagittalWheel);
     };
   }, [mriSeq, subViewMode, mobileTab]);
+
+  useEffect(() => {
+    const orient = screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> };
+    orient?.lock?.('landscape').catch(() => {});
+  }, []);
 
   // 水平断：マウスホバー＆クリック・スマホタップ対応（CSS transform拡大後も座標一致）
   const inspectAxialPointer = (e: React.PointerEvent<HTMLCanvasElement>, selectOnHit: boolean) => {
