@@ -1557,41 +1557,54 @@ export default function App() {
 
   const activeStructureDisplay = hoveredStructure || selectedStructure;
 
-  const renderSliceBar = (axis: 'x' | 'y' | 'z', accentColor: string) => {
+  const renderSliceBar = (
+    axis: 'x' | 'y' | 'z',
+    accentColor: string,
+    opts?: { label?: string; placement?: 'under' | 'panel' }
+  ) => {
     const zRange = axis === 'z' ? getZoomZRange(subViewMode, tiltAngle, coords.y) : null;
     const min = zRange?.min ?? 0;
     const max = zRange?.max ?? DIMS[axis] - 1;
     const value = clampCoord(coords[axis], min, max);
+    const placement = opts?.placement ?? 'under';
     return (
-      <div className="slice-bar">
-        <button
-          className="slice-step-btn"
-          onClick={() => stepCoord(axis, -1)}
-          aria-label={`${axis.toUpperCase()} -1`}
-        >
-          −
-        </button>
-        <input
-          type="range"
-          className="slice-range"
-          min={min}
-          max={max}
-          value={value}
-          onChange={(e) =>
-            setCoords((prev) => ({
-              ...prev,
-              [axis]: clampCoord(parseInt(e.target.value, 10), min, max),
-            }))
-          }
-          style={{ accentColor }}
-        />
-        <button
-          className="slice-step-btn"
-          onClick={() => stepCoord(axis, 1)}
-          aria-label={`${axis.toUpperCase()} +1`}
-        >
-          ＋
-        </button>
+      <div className={`slice-bar slice-bar--${placement}`}>
+        {opts?.label && (
+          <div className="slice-bar-meta">
+            <span style={{ color: accentColor }}>{opts.label}</span>
+            <span style={{ color: accentColor, fontWeight: 700 }}>{value}</span>
+          </div>
+        )}
+        <div className="slice-bar-row">
+          <button
+            className="slice-step-btn"
+            onClick={() => stepCoord(axis, -1)}
+            aria-label={`${axis.toUpperCase()} -1`}
+          >
+            −
+          </button>
+          <input
+            type="range"
+            className="slice-range"
+            min={min}
+            max={max}
+            value={value}
+            onChange={(e) =>
+              setCoords((prev) => ({
+                ...prev,
+                [axis]: clampCoord(parseInt(e.target.value, 10), min, max),
+              }))
+            }
+            style={{ accentColor }}
+          />
+          <button
+            className="slice-step-btn"
+            onClick={() => stepCoord(axis, 1)}
+            aria-label={`${axis.toUpperCase()} +1`}
+          >
+            ＋
+          </button>
+        </div>
       </div>
     );
   };
@@ -1899,7 +1912,7 @@ export default function App() {
                       {renderZoomOverlayButtons()}
                     </div>
                   </div>
-                  {renderSliceBar('z', '#00e5ff')}
+                  {renderSliceBar('z', '#00e5ff', { placement: 'under' })}
                 </div>
 
                 <div
@@ -1923,7 +1936,7 @@ export default function App() {
                       {renderZoomOverlayButtons()}
                     </div>
                   </div>
-                  {renderSliceBar('y', '#4caf50')}
+                  {renderSliceBar('y', '#4caf50', { placement: 'under' })}
                 </div>
 
                 <div
@@ -1947,7 +1960,7 @@ export default function App() {
                       {renderZoomOverlayButtons()}
                     </div>
                   </div>
-                  {renderSliceBar('x', '#ff9800')}
+                  {renderSliceBar('x', '#ff9800', { placement: 'under' })}
                 </div>
 
                 {compactViewer && inlineInspectorOpen && selectedStructure && (
@@ -2006,7 +2019,7 @@ export default function App() {
                       {renderZoomOverlayButtons()}
                     </div>
                   </div>
-                  {renderSliceBar('z', '#00e5ff')}
+                  {renderSliceBar('z', '#00e5ff', { placement: 'under' })}
                 </div>
 
                 <div className="slice-column">
@@ -2034,7 +2047,7 @@ export default function App() {
                       {renderZoomOverlayButtons()}
                     </div>
                   </div>
-                  {renderSliceBar('z', '#00e5ff')}
+                  {renderSliceBar('z', '#00e5ff', { placement: 'under' })}
                 </div>
 
                 {compactViewer && inlineInspectorOpen && selectedStructure && (
@@ -2121,6 +2134,27 @@ export default function App() {
                     }}
                     style={{ width: '100%', cursor: 'pointer' }}
                   />
+                </div>
+
+                {/* PC/タブレット: スライス位置をコントロールに集約（スマホでは画像下バーを使用） */}
+                <div className="slice-controls-panel">
+                  <div className="slice-controls-title">スライス位置</div>
+                  {renderSliceBar('z', '#00e5ff', {
+                    placement: 'panel',
+                    label: '軸位断 Z',
+                  })}
+                  {activeZoomMode === 'ortho' && (
+                    <>
+                      {renderSliceBar('y', '#4caf50', {
+                        placement: 'panel',
+                        label: '冠状断 Y',
+                      })}
+                      {renderSliceBar('x', '#ff9800', {
+                        placement: 'panel',
+                        label: '矢状断 X',
+                      })}
+                    </>
+                  )}
                 </div>
               </div>
             ) : (

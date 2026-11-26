@@ -467,16 +467,54 @@ html, body, #root {
   z-index: 15;
 }
 
-/* 画像すぐ下のスライスレベルバー */
+/* スライスレベルバー */
 .slice-bar {
+  width: 100%;
+  max-width: 100%;
+  flex-shrink: 0;
+}
+
+.slice-bar-row {
   display: flex;
   align-items: center;
   gap: 4px;
   width: 100%;
-  max-width: 100%;
   height: 26px;
   padding: 0 2px;
-  flex-shrink: 0;
+}
+
+.slice-bar-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  margin-bottom: 2px;
+  padding: 0 2px;
+}
+
+/* PC/タブレット既定: 画像下バーは隠してコントロール側を使う */
+.slice-bar--under {
+  display: none;
+}
+
+.slice-controls-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid #2a2a2a;
+}
+
+.slice-controls-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #aaa;
+}
+
+.slice-bar--panel {
+  display: flex;
+  flex-direction: column;
 }
 
 .slice-range {
@@ -688,6 +726,15 @@ html, body, #root {
   }
 
   .inspector-dock.is-suppressed {
+    display: none;
+  }
+
+  /* スマホ: 画像下にスライスバー、コントロール内の集約バーは非表示 */
+  .slice-bar--under {
+    display: block;
+  }
+
+  .slice-controls-panel {
     display: none;
   }
 
