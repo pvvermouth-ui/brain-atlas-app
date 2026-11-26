@@ -182,7 +182,7 @@ html, body, #root {
   text-align: right;
 }
 
-/* ===== メインレイアウト（PC大画面: 左に3断面横並び最大化 ＋ 右にインスペクター） ===== */
+/* ===== メインレイアウト（PC/タブレット既定: 大軸位断＋冠状/矢状縦積み＋右インスペクター） ===== */
 .atlas-main {
   display: flex;
   flex: 1;
@@ -194,14 +194,14 @@ html, body, #root {
   flex: 1;
   min-width: 0;
   min-height: 0;
-  padding: 4px 6px 4px 6px;
+  padding: 8px 10px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  border-right: 1px solid #222;
 }
 
-/* 標準3断面横並び・MRA3画面横並び */
-.ortho-grid,
+/* MRA は3画面横並び */
 .mra-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -211,12 +211,43 @@ html, body, #root {
   width: 100%;
 }
 
-/* 軸位断タップ後：冠状・矢状を隠し、右2/3に説明パネル */
+/* PC/タブレット: 左に大きい軸位断、右に冠状・矢状を上下配置 */
+.ortho-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.65fr) minmax(260px, 0.95fr);
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+}
+
+.ortho-grid > .slice-column:nth-child(1) {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+}
+
+.ortho-grid > .slice-column:nth-child(2) {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.ortho-grid > .slice-column:nth-child(3) {
+  grid-column: 2;
+  grid-row: 2;
+}
+
+/* PC/タブレットではインライン説明パネルを使わず、右ペインの説明を使う */
 .ortho-grid.is-detail {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  grid-template-columns: minmax(0, 1.65fr) minmax(260px, 0.95fr);
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
 }
 
 .ortho-grid.is-detail .slice-column.is-hidden {
+  display: flex;
+}
+
+.ortho-grid.is-detail > .ortho-detail-panel {
   display: none;
 }
 
@@ -334,23 +365,22 @@ html, body, #root {
   border-left: 3px solid #ff7043;
 }
 
-/* 内包拡大・脳幹拡大：2画面横並び */
+/* 内包拡大・脳幹拡大：PC/タブレットは大軸位断＋右に拡大図 */
 .zoom-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1.65fr) minmax(260px, 0.95fr);
   gap: 8px;
   flex: 1;
   min-height: 0;
   width: 100%;
 }
 
-/* 組織タップ後：2画像を左に寄せ、右に説明パネル */
 .zoom-grid.is-detail {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.15fr);
+  grid-template-columns: minmax(0, 1.65fr) minmax(260px, 0.95fr);
 }
 
 .zoom-grid.is-detail .zoom-detail-panel {
-  grid-column: 3;
+  display: none;
 }
 
 .slice-column {
@@ -536,17 +566,22 @@ html, body, #root {
   background-color: #0288d1;
 }
 
-/* 右サイドインスペクター（PC大画面） */
+/* 右サイド：コントロール＋説明（PC/タブレット） */
 .pane-inspector {
-  width: clamp(260px, 21vw, 330px);
+  width: clamp(300px, 22vw, 380px);
   background-color: #0d0d0d;
-  border-left: 1px solid #222;
-  padding: 12px 14px;
+  border-left: none;
+  padding: 14px 16px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
   flex-shrink: 0;
+}
+
+.inspector-dock {
+  border-top: 1px solid #222;
+  padding-top: 12px;
 }
 
 .control-card {
@@ -569,10 +604,9 @@ html, body, #root {
   }
 }
 
-/* ===== スマホ横画面・タブレット（幅1279px以下 または 高さ639px以下） =====
-   1画面目(100dvh)を「スリムヘッダー＋3断面横並び最大画像＋直下スライスバー」で完全占有。
-   下にスクロールすると基準線・臨床神経解剖インスペクターを表示。 */
-@media (max-width: 1279px), (max-height: 639px) {
+/* ===== スマホ（短い画面／横長の狭い画面）: 現行の3断面横並びを維持 =====
+   PC・タブレットは上の既定レイアウトのまま。 */
+@media (max-height: 520px), (max-width: 960px) and (max-height: 620px) {
   :root {
     --header-h: 34px;
   }
@@ -600,6 +634,46 @@ html, body, #root {
     height: calc(100dvh - var(--header-h));
     flex: none;
     padding: 3px 6px 4px 6px;
+    border-right: none;
+  }
+
+  .ortho-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-rows: minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .ortho-grid > .slice-column:nth-child(1),
+  .ortho-grid > .slice-column:nth-child(2),
+  .ortho-grid > .slice-column:nth-child(3) {
+    grid-column: auto;
+    grid-row: auto;
+  }
+
+  .ortho-grid.is-detail {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .ortho-grid.is-detail .slice-column.is-hidden {
+    display: none;
+  }
+
+  .ortho-grid.is-detail > .ortho-detail-panel {
+    display: flex;
+  }
+
+  .zoom-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .zoom-grid.is-detail {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.15fr);
+  }
+
+  .zoom-grid.is-detail .zoom-detail-panel {
+    display: flex;
+    grid-column: 3;
   }
 
   .pane-inspector {
@@ -611,6 +685,10 @@ html, body, #root {
     gap: 14px;
     overflow: visible;
     padding: 12px 12px 32px 12px;
+  }
+
+  .inspector-dock.is-suppressed {
+    display: none;
   }
 
   .desktop-tooltip {

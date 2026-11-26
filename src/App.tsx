@@ -385,14 +385,31 @@ export default function App() {
   } | null>(null);
   // 選択中組織の点滅（0=通常色寄り, 1=ハイライト最大）
   const [selectionPulse, setSelectionPulse] = useState<number>(1);
-  // 軸位断／拡大図タップで右側（または冠状・矢状の位置）に説明パネルを表示
+  // スマホのみ: 軸位断／拡大図タップで冠状・矢状の位置に説明パネルを表示
   const [inlineInspectorOpen, setInlineInspectorOpen] = useState<boolean>(false);
+  // PC/タブレットはクラシック配置、スマホ横画面だけコンパクト3断面
+  const [compactViewer, setCompactViewer] = useState<boolean>(false);
 
   // ネイティブアプリ（iOS/Android）起動時はステータスバーを非表示にして横画面領域を最大化
   useEffect(() => {
     if (!isNativeApp) return;
     StatusBar.setStyle({ style: Style.Dark }).catch(() => {});
     StatusBar.hide().catch(() => {});
+  }, []);
+
+  // スマホ向けコンパクトレイアウト判定（CSS の media と揃える）
+  useEffect(() => {
+    const mq = window.matchMedia(
+      '(max-height: 520px), (max-width: 960px) and (max-height: 620px)'
+    );
+    const sync = () => {
+      const compact = mq.matches;
+      setCompactViewer(compact);
+      if (!compact) setInlineInspectorOpen(false);
+    };
+    sync();
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
   }, []);
 
   // MRA 切替時はインライン説明パネルを閉じる
@@ -1341,7 +1358,8 @@ export default function App() {
       setHoveredStructure({ ...hit, x: e.clientX, y: e.clientY });
       if (selectOnHit) {
         setSelectedStructure(hit);
-        setInlineInspectorOpen(true);
+        // スマホのみインライン説明。PC/タブレットは右ペインの説明を使う
+        if (compactViewer) setInlineInspectorOpen(true);
       }
     } else {
       setHoveredStructure(null);
@@ -1388,7 +1406,7 @@ export default function App() {
       setHoveredStructure({ ...hit, x: e.clientX, y: e.clientY });
       if (selectOnHit) {
         setSelectedStructure(hit);
-        setInlineInspectorOpen(true);
+        if (compactViewer) setInlineInspectorOpen(true);
       }
     } else {
       setHoveredStructure(null);
@@ -1845,8 +1863,12 @@ export default function App() {
                 </div>
               </div>
             ) : activeZoomMode === 'ortho' ? (
-              /* 標準モード: 3断面横並び。軸位断タップ時は冠状・矢状の位置に説明パネルを表示 */
-              <div className={`ortho-grid${inlineInspectorOpen && selectedStructure ? ' is-detail' : ''}`}>
+              /* PC/タブレット: 大軸位断＋冠状/矢状縦積み。スマホ: 3断面横並び＋インライン説明 */
+              <div
+                className={`ortho-grid${
+                  compactViewer && inlineInspectorOpen && selectedStructure ? ' is-detail' : ''
+                }`}
+              >
                 <div className="slice-column">
                   <div className="slice-label" style={{ color: '#00e5ff' }}>
                     <span>軸位断 (Z: {coords.z})</span>
@@ -1869,7 +1891,7 @@ export default function App() {
                         onPointerUp={(e) => inspectAxialPointer(e, true)}
                         onPointerLeave={() => setHoveredStructure(null)}
                       />
-                      {activeStructureDisplay && !inlineInspectorOpen && (
+                      {activeStructureDisplay && !(compactViewer && inlineInspectorOpen) && (
                         <div className="structure-chip">
                           {activeStructureDisplay.info.name}
                         </div>
@@ -1880,7 +1902,11 @@ export default function App() {
                   {renderSliceBar('z', '#00e5ff')}
                 </div>
 
-                <div className={`slice-column${inlineInspectorOpen && selectedStructure ? ' is-hidden' : ''}`}>
+                <div
+                  className={`slice-column${
+                    compactViewer && inlineInspectorOpen && selectedStructure ? ' is-hidden' : ''
+                  }`}
+                >
                   <div className="slice-label" style={{ color: '#4caf50' }}>
                     <span>冠状断 (Y: {coords.y})</span>
                   </div>
@@ -1900,7 +1926,11 @@ export default function App() {
                   {renderSliceBar('y', '#4caf50')}
                 </div>
 
-                <div className={`slice-column${inlineInspectorOpen && selectedStructure ? ' is-hidden' : ''}`}>
+                <div
+                  className={`slice-column${
+                    compactViewer && inlineInspectorOpen && selectedStructure ? ' is-hidden' : ''
+                  }`}
+                >
                   <div className="slice-label" style={{ color: '#ff9800' }}>
                     <span>矢状断 (X: {coords.x})</span>
                   </div>
@@ -1920,7 +1950,7 @@ export default function App() {
                   {renderSliceBar('x', '#ff9800')}
                 </div>
 
-                {inlineInspectorOpen && selectedStructure && (
+                {compactViewer && inlineInspectorOpen && selectedStructure && (
                   <div className="ortho-detail-panel">
                     <div className="ortho-detail-header">
                       <span className="ortho-detail-title">臨床神経解剖インスペクター</span>
@@ -1940,8 +1970,12 @@ export default function App() {
                 )}
               </div>
             ) : (
-              /* 内包拡大・脳幹拡大: 軸位断＋拡大図。組織タップ時は右に説明パネル */
-              <div className={`zoom-grid${inlineInspectorOpen && selectedStructure ? ' is-detail' : ''}`}>
+              /* 内包拡大・脳幹拡大: PCは大軸位＋拡大、スマホは横並び＋インライン説明 */
+              <div
+                className={`zoom-grid${
+                  compactViewer && inlineInspectorOpen && selectedStructure ? ' is-detail' : ''
+                }`}
+              >
                 <div className="slice-column">
                   <div className="slice-label" style={{ color: '#00e5ff' }}>
                     <span>軸位断 (Z: {coords.z})</span>
@@ -1964,7 +1998,7 @@ export default function App() {
                         onPointerUp={(e) => inspectAxialPointer(e, true)}
                         onPointerLeave={() => setHoveredStructure(null)}
                       />
-                      {activeStructureDisplay && !inlineInspectorOpen && (
+                      {activeStructureDisplay && !(compactViewer && inlineInspectorOpen) && (
                         <div className="structure-chip">
                           {activeStructureDisplay.info.name}
                         </div>
@@ -2003,7 +2037,7 @@ export default function App() {
                   {renderSliceBar('z', '#00e5ff')}
                 </div>
 
-                {inlineInspectorOpen && selectedStructure && (
+                {compactViewer && inlineInspectorOpen && selectedStructure && (
                   <div className="ortho-detail-panel zoom-detail-panel">
                     <div className="ortho-detail-header">
                       <span className="ortho-detail-title">臨床神経解剖インスペクター</span>
@@ -2129,29 +2163,31 @@ export default function App() {
               </div>
             )}
 
-            {/* 右側にインライン説明が出ているときは下の説明は出さない */}
-            {!(inlineInspectorOpen && selectedStructure) && (
-              <div style={{ borderTop: '1px solid #222', paddingTop: '12px' }}>
-                <h2 style={{ fontSize: '13px', color: '#777', margin: '0 0 10px 0' }}>
-                  臨床神経解剖インスペクター
-                </h2>
-                {selectedStructure ? (
-                  <div>{renderStructureInspectorBody(selectedStructure)}</div>
-                ) : (
-                  <div
-                    style={{
-                      color: '#555',
-                      fontSize: '12px',
-                      lineHeight: '1.6',
-                      textAlign: 'center',
-                      padding: '16px 0',
-                    }}
-                  >
-                    軸位断の着色側をタップすると解説が表示されます。
-                  </div>
-                )}
-              </div>
-            )}
+            {/* スマホでインライン説明中のみ非表示。PC/タブレットは常に右ペインで表示 */}
+            <div
+              className={`inspector-dock${
+                compactViewer && inlineInspectorOpen && selectedStructure ? ' is-suppressed' : ''
+              }`}
+            >
+              <h2 style={{ fontSize: '13px', color: '#777', margin: '0 0 10px 0' }}>
+                臨床神経解剖インスペクター
+              </h2>
+              {selectedStructure ? (
+                <div>{renderStructureInspectorBody(selectedStructure)}</div>
+              ) : (
+                <div
+                  style={{
+                    color: '#555',
+                    fontSize: '12px',
+                    lineHeight: '1.6',
+                    textAlign: 'center',
+                    padding: '16px 0',
+                  }}
+                >
+                  軸位断の着色側をタップすると解説が表示されます。
+                </div>
+              )}
+            </div>
           </aside>
         </div>
       </div>
